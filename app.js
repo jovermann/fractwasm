@@ -2,7 +2,7 @@ const MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_VIEW = {
   centerX: -0.5,
   centerY: 0,
-  scale: 3.5 / 512,
+  scale: 3.5 / 1024,
 };
 
 const palettes = {
@@ -31,6 +31,10 @@ let wasmMemory = null;
 let view = { ...DEFAULT_VIEW };
 let dragState = null;
 let pendingRender = 0;
+let lastFrame = null;
+let dirtyRenderGeneration = 0;
+let dirtyRenderRunning = false;
+let dirtyRenderQueue = [];
 
 const sizeOptions = [];
 for (let size = 128; size <= 2048; size *= 2) {
@@ -146,24 +150,21 @@ async function loadWasm() {
 }
 
 function paintIterations(iterations, width, height, maxIterations) {
-  paintIterationsPartial(iterations, width, height, maxIterations, height);
+  const image = ctx.createImageData(width, height);
+  paintRegionIntoImage(image, iterations, 0, 0, width, height, maxIterations);
+  canvas.width = width;
+  canvas.height = height;
+  ctx.putImageData(image, 0, 0);
+  return image;
 }
 
-function paintIterationsPartial(iterations, width, height, maxIterations, completedRows) {
+function paintRegionIntoImage(image, iterations, startX, startY, regionWidth, regionHeight, maxIterations) {
   const palette = palettes[paletteInput.value] || palettes.spectrum;
-  const image = ctx.createImageData(width, height);
   const pixels = image.data;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = y * width + x;
-      const pixelIndex = i * 4;
-      if (y >= completedRows) {
-        pixels[pixelIndex] = 18;
-        pixels[pixelIndex + 1] = 64;
-        pixels[pixelIndex + 2] = 160;
-        pixels[pixelIndex + 3] = 255;
-        continue;
-      }
+  for (let y = 0; y < regionHeight; y += 1) {
+    for (let x = 0; x < regionWidth; x += 1) {
+      const i = y * regionWidth + x;
+      const pixelIndex = ((startY + y) * image.width + startX + x) * 4;
       const iter = iterations[i];
       if (iter >= maxIterations) {
         pixels[pixelIndex] = 5;
@@ -176,7 +177,7 @@ function paintIterationsPartial(iterations, width, height, maxIterations, comple
       if (alternatingInput.checked && (iter % 2 === 1)) {
         normalized = (normalized + 0.5) % 1;
       }
-      normalized = normalized % 1;
+      normalized %= 1;
       const [r, g, b] = interpolatePalette(palette, normalized);
       pixels[pixelIndex] = r;
       pixels[pixelIndex + 1] = g;
@@ -184,9 +185,219 @@ function paintIterationsPartial(iterations, width, height, maxIterations, comple
       pixels[pixelIndex + 3] = 255;
     }
   }
-  canvas.width = width;
-  canvas.height = height;
+}
+
+function fillBlue(image) {
+  const pixels = image.data;
+  for (let i = 0; i < pixels.length; i += 4) {
+    pixels[i] = 18;
+    pixels[i + 1] = 64;
+    pixels[i + 2] = 160;
+    pixels[i + 3] = 255;
+  }
+}
+
+function cloneImageData(source) {
+  const clone = ctx.createImageData(source.width, source.height);
+  clone.data.set(source.data);
+  return clone;
+}
+
+function cancelDirtyQueue() {
+  dirtyRenderGeneration += 1;
+  dirtyRenderQueue = [];
+}
+
+function fillBlueRegion(image, startX, startY, regionWidth, regionHeight) {
+  const pixels = image.data;
+  for (let y = 0; y < regionHeight; y += 1) {
+    for (let x = 0; x < regionWidth; x += 1) {
+      const pixelIndex = ((startY + y) * image.width + startX + x) * 4;
+      pixels[pixelIndex] = 18;
+      pixels[pixelIndex + 1] = 64;
+      pixels[pixelIndex + 2] = 160;
+      pixels[pixelIndex + 3] = 255;
+    }
+  }
+}
+
+function renderRegion(width, height, iterations, centerX, centerY, scale, startX, startY, regionWidth, regionHeight) {
+  wasmInstance.exports.render(
+    width,
+    height,
+    iterations,
+    centerX,
+    centerY,
+    scale,
+    startX,
+    startY,
+    regionWidth,
+    regionHeight,
+  );
+  return new Uint32Array(wasmMemory.buffer, 0, regionWidth * regionHeight);
+}
+
+function shiftImageData(source, shiftX, shiftY) {
+  const shifted = ctx.createImageData(source.width, source.height);
+  const src = source.data;
+  const dest = shifted.data;
+  for (let y = 0; y < source.height; y += 1) {
+    const destY = y + shiftY;
+    if (destY < 0 || destY >= source.height) continue;
+    for (let x = 0; x < source.width; x += 1) {
+      const destX = x + shiftX;
+      if (destX < 0 || destX >= source.width) continue;
+      const srcIndex = (y * source.width + x) * 4;
+      const destIndex = (destY * source.width + destX) * 4;
+      dest[destIndex] = src[srcIndex];
+      dest[destIndex + 1] = src[srcIndex + 1];
+      dest[destIndex + 2] = src[srcIndex + 2];
+      dest[destIndex + 3] = src[srcIndex + 3];
+    }
+  }
+  return shifted;
+}
+
+function buildExposedRegions(width, height, shiftX, shiftY) {
+  const regions = [];
+  if (shiftX > 0) {
+    regions.push({ x: 0, y: 0, width: shiftX, height });
+  } else if (shiftX < 0) {
+    regions.push({ x: width + shiftX, y: 0, width: -shiftX, height });
+  }
+  if (shiftY > 0) {
+    regions.push({ x: 0, y: 0, width, height: shiftY });
+  } else if (shiftY < 0) {
+    regions.push({ x: 0, y: height + shiftY, width, height: -shiftY });
+  }
+  return regions.filter((region) => region.width > 0 && region.height > 0);
+}
+
+function previewPanFrame(baseFrame, shiftX, shiftY) {
+  if (Math.abs(shiftX) >= baseFrame.width || Math.abs(shiftY) >= baseFrame.height) {
+    return null;
+  }
+
+  const image = shiftImageData(baseFrame.imageData, shiftX, shiftY);
+  const regions = buildExposedRegions(baseFrame.width, baseFrame.height, shiftX, shiftY);
+  for (const region of regions) {
+    fillBlueRegion(image, region.x, region.y, region.width, region.height);
+  }
+  canvas.width = baseFrame.width;
+  canvas.height = baseFrame.height;
   ctx.putImageData(image, 0, 0);
+  return { image, regions };
+}
+
+function canRenderDirtyRegions(width, height, iterations) {
+  if (!lastFrame || !lastFrame.dirty) return false;
+  return (
+    lastFrame.width === width
+    && lastFrame.height === height
+    && lastFrame.iterations === iterations
+    && lastFrame.palette === paletteInput.value
+    && lastFrame.alternating === alternatingInput.checked
+    && lastFrame.scale === view.scale
+    && lastFrame.centerX === view.centerX
+    && lastFrame.centerY === view.centerY
+    && Array.isArray(lastFrame.dirtyRegions)
+    && lastFrame.dirtyRegions.length > 0
+  );
+}
+
+function queueDirtyRegions(frame) {
+  cancelDirtyQueue();
+  const generation = dirtyRenderGeneration;
+  frame.completedDirtyPixels = 0;
+  frame.totalDirtyPixels = frame.dirtyRegions.reduce((sum, region) => sum + region.width * region.height, 0);
+  dirtyRenderQueue = frame.dirtyRegions.map((region) => ({
+    generation,
+    frame,
+    region,
+  }));
+  processDirtyQueue(generation);
+}
+
+async function processDirtyQueue(generation) {
+  if (dirtyRenderRunning) {
+    return;
+  }
+  dirtyRenderRunning = true;
+  try {
+    while (dirtyRenderQueue.length > 0) {
+      const task = dirtyRenderQueue.shift();
+      if (!task) {
+        continue;
+      }
+      if (task.generation !== dirtyRenderGeneration || task.generation !== generation) {
+        continue;
+      }
+      if (lastFrame !== task.frame || !task.frame.dirty) {
+        continue;
+      }
+      const showProgress = progressInput.checked;
+      const batchRows = showProgress ? Math.max(1, Math.ceil(task.region.height / 16)) : task.region.height;
+      let localRowsDone = 0;
+      let lastPaint = performance.now();
+      while (localRowsDone < task.region.height) {
+        if (task.generation !== dirtyRenderGeneration || lastFrame !== task.frame || !task.frame.dirty) {
+          return;
+        }
+        const rowCount = Math.min(batchRows, task.region.height - localRowsDone);
+        const regionBuffer = renderRegion(
+          task.frame.width,
+          task.frame.height,
+          task.frame.iterations,
+          task.frame.centerX,
+          task.frame.centerY,
+          task.frame.scale,
+          task.region.x,
+          task.region.y + localRowsDone,
+          task.region.width,
+          rowCount,
+        );
+        paintRegionIntoImage(
+          task.frame.imageData,
+          regionBuffer,
+          task.region.x,
+          task.region.y + localRowsDone,
+          task.region.width,
+          rowCount,
+          task.frame.iterations,
+        );
+        localRowsDone += rowCount;
+        task.frame.completedDirtyPixels += task.region.width * rowCount;
+        const now = performance.now();
+        if (showProgress && (now - lastPaint >= 200 || task.frame.completedDirtyPixels === task.frame.totalDirtyPixels)) {
+          if (lastFrame === task.frame) {
+            ctx.putImageData(task.frame.imageData, 0, 0);
+            const percent = task.frame.totalDirtyPixels > 0
+              ? Math.round((task.frame.completedDirtyPixels / task.frame.totalDirtyPixels) * 100)
+              : 100;
+            setStatus(`Rendering exposed regions | ${percent}%`);
+          }
+          lastPaint = now;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      if (!showProgress && lastFrame === task.frame) {
+        ctx.putImageData(task.frame.imageData, 0, 0);
+      }
+    }
+    if (generation === dirtyRenderGeneration && lastFrame && lastFrame.dirty && dirtyRenderQueue.length === 0) {
+      lastFrame.dirty = false;
+      lastFrame.dirtyRegions = [];
+      const zoom = (3.5 / (lastFrame.scale * lastFrame.width)).toFixed(2);
+      setStatus(
+        `Center ${lastFrame.centerX.toFixed(6)}, ${lastFrame.centerY.toFixed(6)} | Zoom ${zoom}×`,
+      );
+    }
+  } finally {
+    dirtyRenderRunning = false;
+    if (dirtyRenderQueue.length > 0) {
+      processDirtyQueue(dirtyRenderGeneration);
+    }
+  }
 }
 
 function pointerToComplex(event) {
@@ -205,53 +416,133 @@ async function render() {
   if (!wasmInstance || !wasmMemory) {
     return;
   }
+  cancelDirtyQueue();
   const token = ++pendingRender;
   const { width, height, iterations } = validateDimensions();
   setLoading(true);
   setStatus(`Rendering ${width}×${height} at ${iterations} iterations`);
   await new Promise((resolve) => requestAnimationFrame(resolve));
   const started = performance.now();
-  const ptr = 0;
-  const buffer = new Uint32Array(wasmMemory.buffer, ptr, width * height);
-  const showProgress = progressInput.checked;
-  const batchRows = showProgress ? Math.max(1, Math.ceil(height / 16)) : height;
-  let completedRows = 0;
-  let lastPaint = performance.now();
-
-  if (showProgress) {
+  if (canRenderDirtyRegions(width, height, iterations)) {
+    const showProgress = progressInput.checked;
+    const image = ctx.createImageData(width, height);
+    image.data.set(lastFrame.imageData.data);
+    const regions = lastFrame.dirtyRegions.slice();
+    let completedArea = 0;
+    const totalArea = regions.reduce((sum, region) => sum + region.width * region.height, 0);
+    let lastPaint = performance.now();
     canvas.width = width;
     canvas.height = height;
-    ctx.fillStyle = '#1240a0';
-    ctx.fillRect(0, 0, width, height);
-  }
+    ctx.putImageData(image, 0, 0);
 
-  while (completedRows < height) {
-    const rowCount = Math.min(batchRows, height - completedRows);
-    wasmInstance.exports.render(
+    for (const region of regions) {
+      const batchRows = showProgress ? Math.max(1, Math.ceil(region.height / 16)) : region.height;
+      let localRowsDone = 0;
+      while (localRowsDone < region.height) {
+        const rowCount = Math.min(batchRows, region.height - localRowsDone);
+        const regionBuffer = renderRegion(
+          width,
+          height,
+          iterations,
+          view.centerX,
+          view.centerY,
+          view.scale,
+          region.x,
+          region.y + localRowsDone,
+          region.width,
+          rowCount,
+        );
+        paintRegionIntoImage(image, regionBuffer, region.x, region.y + localRowsDone, region.width, rowCount, iterations);
+        localRowsDone += rowCount;
+        completedArea += region.width * rowCount;
+        if (token !== pendingRender) {
+          return;
+        }
+        const now = performance.now();
+        if (showProgress && (now - lastPaint >= 200 || completedArea === totalArea)) {
+          ctx.putImageData(image, 0, 0);
+          const percent = totalArea > 0 ? Math.round((completedArea / totalArea) * 100) : 100;
+          setStatus(`Rendering exposed regions | ${percent}%`);
+          lastPaint = now;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    }
+    if (!showProgress) {
+      ctx.putImageData(image, 0, 0);
+    }
+    lastFrame = {
       width,
       height,
       iterations,
-      view.centerX,
-      view.centerY,
-      view.scale,
-      completedRows,
-      rowCount,
-    );
-    completedRows += rowCount;
-    if (token !== pendingRender) {
-      return;
+      palette: paletteInput.value,
+      alternating: alternatingInput.checked,
+      centerX: view.centerX,
+      centerY: view.centerY,
+      scale: view.scale,
+      imageData: image,
+      dirty: false,
+      dirtyRegions: [],
+    };
+  } else {
+    const showProgress = progressInput.checked;
+    const batchRows = showProgress ? Math.max(1, Math.ceil(height / 16)) : height;
+    let completedRows = 0;
+    let lastPaint = performance.now();
+    const image = ctx.createImageData(width, height);
+    fillBlue(image);
+    canvas.width = width;
+    canvas.height = height;
+    if (showProgress) {
+      ctx.putImageData(image, 0, 0);
     }
-    const now = performance.now();
-    if (showProgress && (now - lastPaint >= 200 || completedRows === height)) {
-      paintIterationsPartial(buffer, width, height, iterations, completedRows);
-      const percent = Math.round((completedRows / height) * 100);
-      setStatus(`Rendering ${width}×${height} at ${iterations} iterations | ${percent}%`);
-      lastPaint = now;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-  }
 
-  paintIterations(buffer, width, height, iterations);
+    while (completedRows < height) {
+      const rowCount = Math.min(batchRows, height - completedRows);
+      const regionBuffer = renderRegion(
+        width,
+        height,
+        iterations,
+        view.centerX,
+        view.centerY,
+        view.scale,
+        0,
+        completedRows,
+        width,
+        rowCount,
+      );
+      paintRegionIntoImage(image, regionBuffer, 0, completedRows, width, rowCount, iterations);
+      completedRows += rowCount;
+      if (token !== pendingRender) {
+        return;
+      }
+      const now = performance.now();
+      if (showProgress && (now - lastPaint >= 200 || completedRows === height)) {
+        ctx.putImageData(image, 0, 0);
+        const percent = Math.round((completedRows / height) * 100);
+        setStatus(`Rendering ${width}×${height} at ${iterations} iterations | ${percent}%`);
+        lastPaint = now;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+
+    if (!showProgress) {
+      ctx.putImageData(image, 0, 0);
+    }
+    lastFrame = {
+      width,
+      height,
+      iterations,
+      palette: paletteInput.value,
+      alternating: alternatingInput.checked,
+      centerX: view.centerX,
+      centerY: view.centerY,
+      scale: view.scale,
+      imageData: image,
+      dirty: false,
+      dirtyRegions: [],
+    };
+  }
   const elapsed = performance.now() - started;
   const zoom = (3.5 / (view.scale * width)).toFixed(2);
   setLoading(false);
@@ -272,7 +563,7 @@ function scheduleRender() {
 
 async function initialize() {
   try {
-    populateSelect(sizeInput, sizeOptions, 512);
+    populateSelect(sizeInput, sizeOptions, 1024);
     populateSelect(iterationsInput, iterationOptions, 500);
     sizeInput.dataset.previousValue = sizeInput.value;
     await loadWasm();
@@ -295,7 +586,16 @@ canvas.addEventListener('pointerdown', (event) => {
     startY: event.clientY,
     startCenterX: view.centerX,
     startCenterY: view.centerY,
+    rectWidth: canvas.getBoundingClientRect().width || canvas.width,
+    rectHeight: canvas.getBoundingClientRect().height || canvas.height,
+    baseFrame: lastFrame ? {
+      ...lastFrame,
+      imageData: cloneImageData(lastFrame.imageData),
+      dirty: false,
+      dirtyRegions: [],
+    } : null,
   };
+  cancelDirtyQueue();
   canvas.classList.add('dragging');
   canvas.setPointerCapture(event.pointerId);
   setStatus(`Pan from ${start.real.toFixed(6)}, ${start.imag.toFixed(6)}`);
@@ -305,11 +605,41 @@ canvas.addEventListener('pointermove', (event) => {
   if (!dragState || dragState.pointerId !== event.pointerId) {
     return;
   }
-  const dx = event.clientX - dragState.startX;
-  const dy = event.clientY - dragState.startY;
-  view.centerX = dragState.startCenterX - dx * view.scale;
-  view.centerY = dragState.startCenterY - dy * view.scale;
-  scheduleRender();
+  const dxClient = event.clientX - dragState.startX;
+  const dyClient = event.clientY - dragState.startY;
+  const dxPixels = dxClient * (canvas.width / dragState.rectWidth);
+  const dyPixels = dyClient * (canvas.height / dragState.rectHeight);
+  view.centerX = dragState.startCenterX - dxPixels * view.scale;
+  view.centerY = dragState.startCenterY - dyPixels * view.scale;
+  const shiftX = Math.round(dxPixels);
+  const shiftY = Math.round(dyPixels);
+  const frame = dragState.baseFrame;
+  if (!frame) return;
+  const preview = previewPanFrame(frame, shiftX, shiftY);
+  if (!preview) {
+    setStatus('Pan preview unavailable for this move. Press Render to recompute.');
+    lastFrame = null;
+    return;
+  }
+  lastFrame = {
+    width: frame.width,
+    height: frame.height,
+    iterations: frame.iterations,
+    palette: frame.palette,
+    alternating: frame.alternating,
+    centerX: view.centerX,
+    centerY: view.centerY,
+    scale: frame.scale,
+    imageData: preview.image,
+    dirty: true,
+    dirtyRegions: preview.regions,
+    completedDirtyPixels: 0,
+    totalDirtyPixels: 0,
+  };
+  const dirtyPixels = preview.regions.reduce((sum, region) => sum + region.width * region.height, 0);
+  const percent = Math.round((dirtyPixels / (frame.width * frame.height)) * 100);
+  setStatus(`Pan preview | ${percent}% dirty | rendering queue started`);
+  queueDirtyRegions(lastFrame);
 });
 
 canvas.addEventListener('pointerup', (event) => {
@@ -319,7 +649,9 @@ canvas.addEventListener('pointerup', (event) => {
   dragState = null;
   canvas.classList.remove('dragging');
   canvas.releasePointerCapture(event.pointerId);
-  scheduleRender();
+  if (lastFrame && lastFrame.dirty) {
+    setStatus('Pan preview ready | queued region rendering continues');
+  }
 });
 
 canvas.addEventListener('pointercancel', () => {
@@ -337,6 +669,7 @@ canvas.addEventListener('wheel', (event) => {
   view.scale *= zoomFactor;
   view.centerX = point.real - (point.px - canvas.width / 2) * view.scale;
   view.centerY = point.imag - (point.py - canvas.height / 2) * view.scale;
+  lastFrame = null;
   scheduleRender();
 }, { passive: false });
 
@@ -345,6 +678,7 @@ canvas.addEventListener('dblclick', (event) => {
   view.centerX = point.real;
   view.centerY = point.imag;
   view.scale *= 0.55;
+  lastFrame = null;
   scheduleRender();
 });
 
@@ -357,6 +691,8 @@ renderButton.addEventListener('click', () => {
 
 resetViewButton.addEventListener('click', () => {
   resetView();
+  cancelDirtyQueue();
+  lastFrame = null;
   render().catch((error) => {
     setLoading(false);
     setStatus(error.message);
@@ -372,11 +708,17 @@ for (const input of [sizeInput, iterationsInput, paletteInput]) {
       sizeInput.dataset.previousValue = String(nextSize);
       syncDefaultScale();
     }
+    if (input !== paletteInput) {
+      cancelDirtyQueue();
+      lastFrame = null;
+    }
     scheduleRender();
   });
 }
 
 alternatingInput.addEventListener('change', () => {
+  cancelDirtyQueue();
+  lastFrame = null;
   scheduleRender();
 });
 
