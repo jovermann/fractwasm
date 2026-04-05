@@ -710,14 +710,8 @@ canvas.addEventListener('pointerdown', (event) => {
     startCenterY: view.centerY,
     rectWidth: canvas.getBoundingClientRect().width || canvas.width,
     rectHeight: canvas.getBoundingClientRect().height || canvas.height,
-    baseFrame: lastFrame ? {
-      ...lastFrame,
-      imageData: cloneImageData(lastFrame.imageData),
-      dirty: Boolean(lastFrame.dirty),
-      dirtyRegions: Array.isArray(lastFrame.dirtyRegions)
-        ? lastFrame.dirtyRegions.map((region) => ({ ...region }))
-        : [],
-    } : null,
+    lastShiftX: 0,
+    lastShiftY: 0,
   };
   cancelDirtyQueue();
   canvas.classList.add('dragging');
@@ -735,9 +729,14 @@ canvas.addEventListener('pointermove', (event) => {
   const dyPixels = dyClient * (canvas.height / dragState.rectHeight);
   view.centerX = dragState.startCenterX - dxPixels * view.scale;
   view.centerY = dragState.startCenterY - dyPixels * view.scale;
-  const shiftX = Math.round(dxPixels);
-  const shiftY = Math.round(dyPixels);
-  const frame = dragState.baseFrame;
+  const absoluteShiftX = Math.round(dxPixels);
+  const absoluteShiftY = Math.round(dyPixels);
+  const shiftX = absoluteShiftX - dragState.lastShiftX;
+  const shiftY = absoluteShiftY - dragState.lastShiftY;
+  if (shiftX === 0 && shiftY === 0) {
+    return;
+  }
+  const frame = lastFrame;
   if (!frame) return;
   const preview = previewPanFrame(frame, shiftX, shiftY);
   if (!preview) {
@@ -745,6 +744,8 @@ canvas.addEventListener('pointermove', (event) => {
     lastFrame = null;
     return;
   }
+  dragState.lastShiftX = absoluteShiftX;
+  dragState.lastShiftY = absoluteShiftY;
   lastFrame = {
     width: frame.width,
     height: frame.height,
