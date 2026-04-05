@@ -391,6 +391,60 @@ function renderJuliaFull(width, height, iterations, cReal, cImag) {
   juliaCtx.putImageData(image, 0, 0);
 }
 
+async function renderJuliaSsg(width, height, iterations, cReal, cImag) {
+  const image = juliaCtx.createImageData(width, height);
+  fillBlue(image);
+  juliaCanvas.width = width;
+  juliaCanvas.height = height;
+  if (progressInput.checked) {
+    juliaCtx.putImageData(image, 0, 0);
+  }
+  clearFullImageBuffer(width, height);
+  const stages = [16, 8, 4, 2, 1];
+  const totalSteps = (stages.length * 2) - 1;
+  let step = 0;
+  const token = juliaRenderToken;
+  for (const stride of stages) {
+    if (token !== juliaRenderToken) {
+      return;
+    }
+    wasmInstance.exports.render_julia_stride(
+      width,
+      height,
+      iterations,
+      0,
+      0,
+      3.2 / width,
+      cReal,
+      cImag,
+      stride,
+      1,
+    );
+    paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+    step += 1;
+    if (progressInput.checked) {
+      juliaCtx.putImageData(image, 0, 0);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (stride > 1) {
+      if (token !== juliaRenderToken) {
+        return;
+      }
+      guessFromBuffer(width, height, stride);
+      paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+      step += 1;
+      if (progressInput.checked) {
+        juliaCtx.putImageData(image, 0, 0);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    }
+  }
+  juliaCtx.putImageData(image, 0, 0);
+  if (progressInput.checked && token === juliaRenderToken) {
+    setStatus(`Julia SSG complete | ${totalSteps}/${totalSteps}`);
+  }
+}
+
 async function renderJulia() {
   if (!wasmInstance || !juliaCtx) {
     return;
@@ -408,6 +462,10 @@ async function renderJulia() {
   const version = sceneVersion;
   await new Promise((resolve) => requestAnimationFrame(resolve));
   if (token !== juliaRenderToken || version !== sceneVersion) {
+    return;
+  }
+  if (readAlgo() === 'ssg') {
+    await renderJuliaSsg(width, height, iterations, juliaParam.real, juliaParam.imag);
     return;
   }
   renderJuliaFull(width, height, iterations, juliaParam.real, juliaParam.imag);
