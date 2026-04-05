@@ -737,6 +737,7 @@ canvas.addEventListener('pointermove', (event) => {
   if (!dragState || dragState.pointerId !== event.pointerId) {
     return;
   }
+  const cycle = readCycleSettings();
   const dxClient = event.clientX - dragState.startX;
   const dyClient = event.clientY - dragState.startY;
   const dxPixels = dxClient * (canvas.width / dragState.rectWidth);
