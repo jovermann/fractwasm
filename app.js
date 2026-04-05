@@ -33,10 +33,10 @@ let dragState = null;
 let pendingRender = 0;
 
 const sizeOptions = [];
-for (let size = 128; size <= 4096; size *= 2) {
+for (let size = 128; size <= 2048; size *= 2) {
   sizeOptions.push(size);
   const intermediate = Math.floor(size * 1.5);
-  if (intermediate < 4096) {
+  if (intermediate < 2048) {
     sizeOptions.push(intermediate);
   }
 }
@@ -101,7 +101,7 @@ function populateSelect(select, values, selectedValue) {
 }
 
 function syncDefaultScale() {
-  const size = clamp(Number.parseInt(sizeInput.value, 10) || 512, 128, 4096);
+  const size = clamp(Number.parseInt(sizeInput.value, 10) || 512, 128, 2048);
   DEFAULT_VIEW.scale = 3.5 / size;
 }
 
@@ -118,7 +118,7 @@ function resetView() {
 }
 
 function validateDimensions() {
-  const size = clamp(Number.parseInt(sizeInput.value, 10) || 512, 128, 4096);
+  const size = clamp(Number.parseInt(sizeInput.value, 10) || 512, 128, 2048);
   const iterations = clamp(Number.parseInt(iterationsInput.value, 10) || 500, 10, 1000000);
   sizeInput.value = String(size);
   iterationsInput.value = String(iterations);
