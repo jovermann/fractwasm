@@ -333,6 +333,66 @@ function clearFullImageBuffer(width, height) {
   getFullImageBuffer(width, height).fill(UNKNOWN_ITER);
 }
 
+function guessFromBuffer(width, height, stride) {
+  const buffer = getFullImageBuffer(width, height);
+  const half = Math.max(1, stride >> 1);
+  if (stride <= 1) {
+    return;
+  }
+  for (let y = stride; y + stride < height; y += stride) {
+    for (let x = stride; x + stride < width; x += stride) {
+      const ring = [];
+      let valid = true;
+      for (let gy = -1; gy <= 2 && valid; gy += 1) {
+        for (let gx = -1; gx <= 2; gx += 1) {
+          const px = x + gx * stride;
+          const py = y + gy * stride;
+          if (px < 0 || px >= width || py < 0 || py >= height) {
+            valid = false;
+            break;
+          }
+          const value = buffer[(py * width) + px];
+          if (value === UNKNOWN_ITER) {
+            valid = false;
+            break;
+          }
+          ring.push(value);
+        }
+      }
+      if (!valid) {
+        continue;
+      }
+      const first = ring[0];
+      let same = true;
+      for (let i = 1; i < ring.length; i += 1) {
+        if (ring[i] !== first) {
+          same = false;
+          break;
+        }
+      }
+      if (!same) {
+        continue;
+      }
+      for (let dy = 0; dy <= stride; dy += half) {
+        for (let dx = 0; dx <= stride; dx += half) {
+          if ((dx % stride === 0) && (dy % stride === 0)) {
+            continue;
+          }
+          const px = x + dx;
+          const py = y + dy;
+          if (px < 0 || px >= width || py < 0 || py >= height) {
+            continue;
+          }
+          const index = (py * width) + px;
+          if (buffer[index] === UNKNOWN_ITER) {
+            buffer[index] = first;
+          }
+        }
+      }
+    }
+  }
+}
+
 async function renderRegionPlainIntoImage(task) {
   const {
     width,
@@ -410,7 +470,7 @@ async function renderFullImageSsg(width, height, iterations, centerX, centerY, s
       if (shouldAbort()) {
         return { aborted: true };
       }
-      wasmInstance.exports.guess(width, height, stride);
+      guessFromBuffer(width, height, stride);
       paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
       step += 1;
       if (progress) {

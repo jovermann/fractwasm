@@ -261,64 +261,93 @@ def build_render_stride_body() -> bytes:
 def build_guess_body() -> bytes:
     # Params: 0 width, 1 height, 2 stride
     # Locals:
-    # 3 y, 4 x, 5 limit_x, 6 limit_y, 7 tl, 8 tr, 9 bl, 10 br, 11 fy, 12 fx, 13 idx, 14 tmp
+    # 3 y, 4 x, 5 val, 6 gyi, 7 gxi, 8 px, 9 py, 10 idx, 11 step, 12 fy, 13 fx, 14 ok
     code = bytearray()
     code += vec([u32(12) + bytes([I32])])
 
-    code += i32_const(0) + local_set(3)
+    code += local_get(2) + i32_const(1) + b"\x76" + local_set(11)
+    code += local_get(2) + local_set(3)
 
     code += block()
     code += loop()
-    code += local_get(3) + local_get(2) + b"\x6A" + local_get(1) + b"\x4E" + br_if(1)
+    code += local_get(3) + local_get(2) + local_get(2) + b"\x6A" + b"\x6A" + local_get(1) + b"\x4E" + br_if(1)
 
-    code += i32_const(0) + local_set(4)
+    code += local_get(2) + local_set(4)
     code += block()
     code += loop()
-    code += local_get(4) + local_get(2) + b"\x6A" + local_get(0) + b"\x4E" + br_if(1)
+    code += local_get(4) + local_get(2) + local_get(2) + b"\x6A" + b"\x6A" + local_get(0) + b"\x4E" + br_if(1)
 
-    code += local_get(3) + local_get(0) + b"\x6C" + local_get(4) + b"\x6A" + i32_const(2) + b"\x74" + local_set(13)
-    code += local_get(13) + b"\x28\x02\x00" + local_set(7)
+    code += local_get(3) + local_get(2) + b"\x6B" + local_set(9)
+    code += local_get(4) + local_get(2) + b"\x6B" + local_set(8)
+    code += local_get(9) + local_get(0) + b"\x6C" + local_get(8) + b"\x6A" + i32_const(2) + b"\x74" + local_set(10)
+    code += local_get(10) + b"\x28\x02\x00" + local_set(5)
 
     code += block()
-    code += local_get(7) + i32_const(-1) + b"\x46" + br_if(0)
-
-    code += local_get(3) + local_get(0) + b"\x6C" + local_get(4) + local_get(2) + b"\x6A" + b"\x6A" + i32_const(2) + b"\x74" + local_set(13)
-    code += local_get(13) + b"\x28\x02\x00" + local_set(8)
-    code += local_get(8) + local_get(7) + b"\x47" + br_if(0)
-
-    code += local_get(3) + local_get(2) + b"\x6A" + local_get(0) + b"\x6C" + local_get(4) + b"\x6A" + i32_const(2) + b"\x74" + local_set(13)
-    code += local_get(13) + b"\x28\x02\x00" + local_set(9)
-    code += local_get(9) + local_get(7) + b"\x47" + br_if(0)
-
-    code += local_get(3) + local_get(2) + b"\x6A" + local_get(0) + b"\x6C" + local_get(4) + local_get(2) + b"\x6A" + b"\x6A" + i32_const(2) + b"\x74" + local_set(13)
-    code += local_get(13) + b"\x28\x02\x00" + local_set(10)
-    code += local_get(10) + local_get(7) + b"\x47" + br_if(0)
-
-    code += local_get(4) + local_get(2) + b"\x6A" + i32_const(1) + b"\x6A" + local_set(5)
-    code += local_get(3) + local_get(2) + b"\x6A" + i32_const(1) + b"\x6A" + local_set(6)
-    code += local_get(3) + local_set(11)
+    code += local_get(5) + i32_const(-1) + b"\x46" + br_if(0)
+    code += i32_const(1) + local_set(14)
+    code += i32_const(0) + local_set(6)
 
     code += block()
     code += loop()
-    code += local_get(11) + local_get(6) + b"\x4E" + br_if(1)
+    code += local_get(6) + i32_const(4) + b"\x4E" + br_if(1)
 
-    code += local_get(4) + local_set(12)
+    code += i32_const(0) + local_set(7)
     code += block()
     code += loop()
-    code += local_get(12) + local_get(5) + b"\x4E" + br_if(1)
+    code += local_get(7) + i32_const(4) + b"\x4E" + br_if(1)
 
-    code += local_get(11) + local_get(0) + b"\x6C" + local_get(12) + b"\x6A" + i32_const(2) + b"\x74" + local_set(13)
+    code += local_get(4) + local_get(2) + b"\x6B" + local_get(7) + local_get(2) + b"\x6C" + b"\x6A" + local_set(8)
+    code += local_get(3) + local_get(2) + b"\x6B" + local_get(6) + local_get(2) + b"\x6C" + b"\x6A" + local_set(9)
+    code += local_get(9) + local_get(0) + b"\x6C" + local_get(8) + b"\x6A" + i32_const(2) + b"\x74" + local_set(10)
     code += block()
-    code += local_get(13) + b"\x28\x02\x00" + i32_const(-1) + b"\x47" + br_if(0)
-    code += local_get(13) + local_get(7) + b"\x36\x02\x00"
+    code += local_get(10) + b"\x28\x02\x00" + local_get(5) + b"\x47" + br_if(0)
     code += end()
 
-    code += local_get(12) + i32_const(1) + b"\x6A" + local_set(12)
+    code += local_get(7) + i32_const(1) + b"\x6A" + local_set(7)
     code += br(0)
     code += end()
     code += end()
 
-    code += local_get(11) + i32_const(1) + b"\x6A" + local_set(11)
+    code += local_get(6) + i32_const(1) + b"\x6A" + local_set(6)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += local_get(14) + i32_const(0) + b"\x46" + br_if(0)
+
+    code += i32_const(0) + local_set(12)
+    code += block()
+    code += loop()
+    code += local_get(12) + local_get(2) + b"\x4F" + br_if(1)
+
+    code += i32_const(0) + local_set(13)
+    code += block()
+    code += loop()
+    code += local_get(13) + local_get(2) + b"\x4F" + br_if(1)
+
+    code += block()
+    code += local_get(12) + i32_const(0) + b"\x46"
+    code += local_get(12) + local_get(2) + b"\x46" + b"\x72"
+    code += local_get(13) + i32_const(0) + b"\x46"
+    code += local_get(13) + local_get(2) + b"\x46" + b"\x72"
+    code += b"\x71" + br_if(0)
+
+    code += local_get(4) + local_get(13) + b"\x6A" + local_set(8)
+    code += local_get(3) + local_get(12) + b"\x6A" + local_set(9)
+    code += local_get(9) + local_get(0) + b"\x6C" + local_get(8) + b"\x6A" + i32_const(2) + b"\x74" + local_set(10)
+    code += block()
+    code += local_get(10) + b"\x28\x02\x00" + i32_const(-1) + b"\x47" + br_if(0)
+    code += local_get(10) + local_get(5) + b"\x36\x02\x00"
+    code += end()
+
+    code += end()
+
+    code += local_get(13) + local_get(11) + b"\x6A" + local_set(13)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += local_get(12) + local_get(11) + b"\x6A" + local_set(12)
     code += br(0)
     code += end()
     code += end()
