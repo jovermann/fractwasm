@@ -10,25 +10,29 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">FractWasm</div>
-      <label class="date-field">W
-        <input id="widthInput" type="number" min="160" max="2048" step="1" value="960" />
-      </label>
-      <label class="date-field">H
-        <input id="heightInput" type="number" min="120" max="2048" step="1" value="640" />
+      <label class="date-field">Size
+        <select id="sizeInput"></select>
       </label>
       <label class="date-field">Iterations
-        <input id="iterationsInput" type="number" min="32" max="8192" step="32" value="512" />
+        <select id="iterationsInput"></select>
       </label>
       <label class="date-field">Palette
         <select id="paletteInput">
-          <option value="plasma">Plasma</option>
-          <option value="inferno">Inferno</option>
-          <option value="viridis">Viridis</option>
-          <option value="cividis">Cividis</option>
-          <option value="hotmetal">Hot Metal</option>
-          <option value="ocean">Ocean</option>
-          <option value="greys">Greys</option>
+          <option value="spectrum">Spectrum</option>
+          <option value="fire-ice">Fire & Ice</option>
+          <option value="viridian-loop">Viridian Loop</option>
+          <option value="ember-loop">Ember Loop</option>
+          <option value="nocturne">Nocturne</option>
+          <option value="mono-loop">Mono Loop</option>
         </select>
+      </label>
+      <label class="date-field">
+        <input id="alternatingInput" type="checkbox" />
+        Alternating
+      </label>
+      <label class="date-field">
+        <input id="progressInput" type="checkbox" />
+        Progress
       </label>
       <button id="resetViewButton" class="btn">Reset View</button>
       <button id="renderButton" class="btn accent">Render</button>

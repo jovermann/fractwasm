@@ -2,23 +2,23 @@ const MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_VIEW = {
   centerX: -0.5,
   centerY: 0,
-  scale: 3.5 / 960,
+  scale: 3.5 / 512,
 };
 
 const palettes = {
-  plasma: ['#0d0887', '#5c01a6', '#9c179e', '#cc4778', '#ed7953', '#fdb42f', '#f0f921'],
-  inferno: ['#000004', '#320a5e', '#781c6d', '#bc3754', '#ed6925', '#fbb41a', '#fcffa4'],
-  viridis: ['#440154', '#414487', '#2a788e', '#22a884', '#7ad151', '#bddf26', '#fde725'],
-  cividis: ['#00224e', '#274d7e', '#4f6d8a', '#768b6d', '#a59c55', '#d2b746', '#fee838'],
-  hotmetal: ['#120a0a', '#4f120e', '#8f2411', '#d14f11', '#ff9d19', '#ffe28c', '#fff7e2'],
-  ocean: ['#09111c', '#103c5a', '#176b87', '#1ba3a3', '#8bd3c7', '#f0f7ff'],
-  greys: ['#111111', '#2d2d2d', '#525252', '#737373', '#969696', '#bdbdbd', '#f0f0f0'],
+  spectrum: ['#ff5e5b', '#ffbe0b', '#f7ff58', '#4dd599', '#00bbf9', '#4361ee', '#8338ec', '#ff006e', '#ff5e5b'],
+  'fire-ice': ['#ff7b00', '#ffb700', '#ffe566', '#e8f7ff', '#8ecae6', '#219ebc', '#023047', '#6a00f4', '#ff7b00'],
+  'viridian-loop': ['#123524', '#1f6f50', '#2ea97d', '#8fd694', '#d9ed92', '#8fd694', '#2ea97d', '#1f6f50', '#123524'],
+  'ember-loop': ['#2b0b0b', '#7f1d1d', '#c2410c', '#fb923c', '#fde68a', '#fb923c', '#c2410c', '#7f1d1d', '#2b0b0b'],
+  nocturne: ['#03045e', '#023e8a', '#0077b6', '#0096c7', '#48cae4', '#90e0ef', '#560bad', '#7209b7', '#03045e'],
+  'mono-loop': ['#111111', '#3a3a3a', '#737373', '#bdbdbd', '#f3f3f3', '#bdbdbd', '#737373', '#3a3a3a', '#111111'],
 };
 
-const widthInput = document.getElementById('widthInput');
-const heightInput = document.getElementById('heightInput');
+const sizeInput = document.getElementById('sizeInput');
 const iterationsInput = document.getElementById('iterationsInput');
 const paletteInput = document.getElementById('paletteInput');
+const alternatingInput = document.getElementById('alternatingInput');
+const progressInput = document.getElementById('progressInput');
 const renderButton = document.getElementById('renderButton');
 const resetViewButton = document.getElementById('resetViewButton');
 const statusText = document.getElementById('statusText');
@@ -31,6 +31,21 @@ let wasmMemory = null;
 let view = { ...DEFAULT_VIEW };
 let dragState = null;
 let pendingRender = 0;
+
+const sizeOptions = [];
+for (let size = 128; size <= 4096; size += 128) {
+  sizeOptions.push(size);
+}
+
+const iterationOptions = [];
+for (const base of [1, 2, 5]) {
+  let value = base * 10;
+  while (value <= 1000000) {
+    iterationOptions.push(value);
+    value *= 10;
+  }
+}
+iterationOptions.sort((a, b) => a - b);
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -68,9 +83,29 @@ function setLoading(isLoading) {
   loadingOverlay.hidden = !isLoading;
 }
 
+function populateSelect(select, values, selectedValue) {
+  select.textContent = '';
+  for (const value of values) {
+    const option = document.createElement('option');
+    option.value = String(value);
+    option.textContent = String(value);
+    if (value === selectedValue) {
+      option.selected = true;
+    }
+    select.append(option);
+  }
+}
+
 function syncDefaultScale() {
-  const width = clamp(Number.parseInt(widthInput.value, 10) || 960, 160, 2048);
-  DEFAULT_VIEW.scale = 3.5 / width;
+  const size = clamp(Number.parseInt(sizeInput.value, 10) || 512, 128, 4096);
+  DEFAULT_VIEW.scale = 3.5 / size;
+}
+
+function syncViewScaleForSizeChange(previousSize, nextSize) {
+  if (!Number.isFinite(previousSize) || !Number.isFinite(nextSize) || previousSize <= 0 || nextSize <= 0) {
+    return;
+  }
+  view.scale *= previousSize / nextSize;
 }
 
 function resetView() {
@@ -79,17 +114,15 @@ function resetView() {
 }
 
 function validateDimensions() {
-  const width = clamp(Number.parseInt(widthInput.value, 10) || 960, 160, 2048);
-  const height = clamp(Number.parseInt(heightInput.value, 10) || 640, 120, 2048);
-  const iterations = clamp(Number.parseInt(iterationsInput.value, 10) || 512, 32, 8192);
-  widthInput.value = String(width);
-  heightInput.value = String(height);
+  const size = clamp(Number.parseInt(sizeInput.value, 10) || 512, 128, 4096);
+  const iterations = clamp(Number.parseInt(iterationsInput.value, 10) || 500, 10, 1000000);
+  sizeInput.value = String(size);
   iterationsInput.value = String(iterations);
-  const requiredBytes = width * height * 4;
+  const requiredBytes = size * size * 4;
   if (requiredBytes > MEMORY_LIMIT_BYTES) {
     throw new Error(`Image size exceeds wasm memory budget (${Math.round(MEMORY_LIMIT_BYTES / (1024 * 1024))} MiB).`);
   }
-  return { width, height, iterations };
+  return { width: size, height: size, iterations };
 }
 
 async function loadWasm() {
@@ -109,25 +142,43 @@ async function loadWasm() {
 }
 
 function paintIterations(iterations, width, height, maxIterations) {
-  const palette = palettes[paletteInput.value] || palettes.plasma;
+  paintIterationsPartial(iterations, width, height, maxIterations, height);
+}
+
+function paintIterationsPartial(iterations, width, height, maxIterations, completedRows) {
+  const palette = palettes[paletteInput.value] || palettes.spectrum;
   const image = ctx.createImageData(width, height);
   const pixels = image.data;
-  for (let i = 0; i < iterations.length; i += 1) {
-    const iter = iterations[i];
-    const pixelIndex = i * 4;
-    if (iter >= maxIterations) {
-      pixels[pixelIndex] = 5;
-      pixels[pixelIndex + 1] = 7;
-      pixels[pixelIndex + 2] = 12;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      const pixelIndex = i * 4;
+      if (y >= completedRows) {
+        pixels[pixelIndex] = 18;
+        pixels[pixelIndex + 1] = 64;
+        pixels[pixelIndex + 2] = 160;
+        pixels[pixelIndex + 3] = 255;
+        continue;
+      }
+      const iter = iterations[i];
+      if (iter >= maxIterations) {
+        pixels[pixelIndex] = 5;
+        pixels[pixelIndex + 1] = 7;
+        pixels[pixelIndex + 2] = 12;
+        pixels[pixelIndex + 3] = 255;
+        continue;
+      }
+      let normalized = Math.sqrt(iter / maxIterations);
+      if (alternatingInput.checked && (iter % 2 === 1)) {
+        normalized = (normalized + 0.5) % 1;
+      }
+      normalized = normalized % 1;
+      const [r, g, b] = interpolatePalette(palette, normalized);
+      pixels[pixelIndex] = r;
+      pixels[pixelIndex + 1] = g;
+      pixels[pixelIndex + 2] = b;
       pixels[pixelIndex + 3] = 255;
-      continue;
     }
-    const normalized = Math.sqrt(iter / maxIterations);
-    const [r, g, b] = interpolatePalette(palette, normalized);
-    pixels[pixelIndex] = r;
-    pixels[pixelIndex + 1] = g;
-    pixels[pixelIndex + 2] = b;
-    pixels[pixelIndex + 3] = 255;
   }
   canvas.width = width;
   canvas.height = height;
@@ -156,18 +207,46 @@ async function render() {
   setStatus(`Rendering ${width}×${height} at ${iterations} iterations`);
   await new Promise((resolve) => requestAnimationFrame(resolve));
   const started = performance.now();
-  const ptr = wasmInstance.exports.render(
-    width,
-    height,
-    iterations,
-    view.centerX,
-    view.centerY,
-    view.scale,
-  );
-  if (token !== pendingRender) {
-    return;
-  }
+  const ptr = 0;
   const buffer = new Uint32Array(wasmMemory.buffer, ptr, width * height);
+  const showProgress = progressInput.checked;
+  const batchRows = showProgress ? Math.min(32, height) : height;
+  let completedRows = 0;
+  let lastPaint = performance.now();
+
+  if (showProgress) {
+    canvas.width = width;
+    canvas.height = height;
+    ctx.fillStyle = '#1240a0';
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  while (completedRows < height) {
+    const rowCount = Math.min(batchRows, height - completedRows);
+    wasmInstance.exports.render(
+      width,
+      height,
+      iterations,
+      view.centerX,
+      view.centerY,
+      view.scale,
+      completedRows,
+      rowCount,
+    );
+    completedRows += rowCount;
+    if (token !== pendingRender) {
+      return;
+    }
+    const now = performance.now();
+    if (showProgress && (now - lastPaint >= 200 || completedRows === height)) {
+      paintIterationsPartial(buffer, width, height, iterations, completedRows);
+      const percent = Math.round((completedRows / height) * 100);
+      setStatus(`Rendering ${width}×${height} at ${iterations} iterations | ${percent}%`);
+      lastPaint = now;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
   paintIterations(buffer, width, height, iterations);
   const elapsed = performance.now() - started;
   const zoom = (3.5 / (view.scale * width)).toFixed(2);
@@ -189,6 +268,9 @@ function scheduleRender() {
 
 async function initialize() {
   try {
+    populateSelect(sizeInput, sizeOptions, 512);
+    populateSelect(iterationsInput, iterationOptions, 500);
+    sizeInput.dataset.previousValue = sizeInput.value;
     await loadWasm();
     resetView();
     await render();
@@ -277,14 +359,26 @@ resetViewButton.addEventListener('click', () => {
   });
 });
 
-for (const input of [widthInput, heightInput, iterationsInput, paletteInput]) {
+for (const input of [sizeInput, iterationsInput, paletteInput]) {
   input.addEventListener('change', () => {
-    if (input === widthInput || input === heightInput) {
+    if (input === sizeInput) {
+      const previousSize = Number.parseInt(sizeInput.dataset.previousValue || sizeInput.value, 10);
+      const nextSize = Number.parseInt(sizeInput.value, 10);
+      syncViewScaleForSizeChange(previousSize, nextSize);
+      sizeInput.dataset.previousValue = String(nextSize);
       syncDefaultScale();
     }
     scheduleRender();
   });
 }
+
+alternatingInput.addEventListener('change', () => {
+  scheduleRender();
+});
+
+progressInput.addEventListener('change', () => {
+  scheduleRender();
+});
 
 initialize().catch((error) => {
   console.error(error);

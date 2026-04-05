@@ -82,9 +82,8 @@ select {
   line-height: 1.2;
 }
 
-#widthInput,
-#heightInput {
-  width: 5.5rem;
+#sizeInput {
+  width: 6.5rem;
 }
 
 #iterationsInput {
@@ -93,6 +92,14 @@ select {
 
 #paletteInput {
   width: 8rem;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  inline-size: 14px;
+  block-size: 14px;
+  margin: 0;
+  padding: 0;
 }
 
 .btn {
