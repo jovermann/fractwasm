@@ -26,9 +26,34 @@
           <option value="mono-loop">Mono Loop</option>
         </select>
       </label>
-      <label class="date-field">
-        <input id="alternatingInput" type="checkbox" />
-        Alternating
+      <label class="date-field">Cycle
+        <select id="cycleLengthInput">
+          <option value="16">16</option>
+          <option value="32">32</option>
+          <option value="64">64</option>
+          <option value="128">128</option>
+          <option value="256" selected>256</option>
+          <option value="512">512</option>
+          <option value="1024">1024</option>
+          <option value="2048">2048</option>
+          <option disabled>────────</option>
+          <option value="16-alt">16 alt</option>
+          <option value="32-alt">32 alt</option>
+          <option value="64-alt">64 alt</option>
+          <option value="128-alt">128 alt</option>
+          <option value="256-alt">256 alt</option>
+          <option value="512-alt">512 alt</option>
+          <option value="1024-alt">1024 alt</option>
+          <option value="2048-alt">2048 alt</option>
+        </select>
+      </label>
+      <label class="date-field">Phase
+        <select id="cyclePhaseInput">
+          <option value="0" selected>0%</option>
+          <option value="0.25">25%</option>
+          <option value="0.5">50%</option>
+          <option value="0.75">75%</option>
+        </select>
       </label>
       <label class="date-field">
         <input id="progressInput" type="checkbox" checked />

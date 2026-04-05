@@ -17,7 +17,8 @@ const palettes = {
 const sizeInput = document.getElementById('sizeInput');
 const iterationsInput = document.getElementById('iterationsInput');
 const paletteInput = document.getElementById('paletteInput');
-const alternatingInput = document.getElementById('alternatingInput');
+const cycleLengthInput = document.getElementById('cycleLengthInput');
+const cyclePhaseInput = document.getElementById('cyclePhaseInput');
 const progressInput = document.getElementById('progressInput');
 const renderButton = document.getElementById('renderButton');
 const resetViewButton = document.getElementById('resetViewButton');
@@ -55,6 +56,14 @@ for (const base of [1, 2, 5]) {
   }
 }
 iterationOptions.sort((a, b) => a - b);
+
+function readCycleSettings() {
+  const rawValue = String(cycleLengthInput.value || '256');
+  const alternating = rawValue.endsWith('-alt');
+  const lengthText = alternating ? rawValue.slice(0, -4) : rawValue;
+  const length = Math.max(1, Number.parseInt(lengthText, 10) || 256);
+  return { length, alternating, rawValue };
+}
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -161,6 +170,8 @@ function paintIterations(iterations, width, height, maxIterations) {
 
 function paintRegionIntoImage(image, iterations, startX, startY, regionWidth, regionHeight, maxIterations) {
   const palette = palettes[paletteInput.value] || palettes.spectrum;
+  const cycle = readCycleSettings();
+  const cyclePhase = Number.parseFloat(cyclePhaseInput.value) || 0;
   const pixels = image.data;
   for (let y = 0; y < regionHeight; y += 1) {
     for (let x = 0; x < regionWidth; x += 1) {
@@ -174,11 +185,10 @@ function paintRegionIntoImage(image, iterations, startX, startY, regionWidth, re
         pixels[pixelIndex + 3] = 255;
         continue;
       }
-      let normalized = Math.sqrt(iter / maxIterations);
-      if (alternatingInput.checked && (iter % 2 === 1)) {
+      let normalized = (((iter % cycle.length) / cycle.length) + cyclePhase) % 1;
+      if (cycle.alternating && (iter % 2 === 1)) {
         normalized = (normalized + 0.5) % 1;
       }
-      normalized %= 1;
       const [r, g, b] = interpolatePalette(palette, normalized);
       pixels[pixelIndex] = r;
       pixels[pixelIndex + 1] = g;
@@ -390,7 +400,8 @@ function canRenderDirtyRegions(width, height, iterations) {
     && lastFrame.height === height
     && lastFrame.iterations === iterations
     && lastFrame.palette === paletteInput.value
-    && lastFrame.alternating === alternatingInput.checked
+    && lastFrame.cycleMode === readCycleSettings().rawValue
+    && lastFrame.cyclePhase === (Number.parseFloat(cyclePhaseInput.value) || 0)
     && lastFrame.scale === view.scale
     && lastFrame.centerX === view.centerX
     && lastFrame.centerY === view.centerY
@@ -539,6 +550,7 @@ async function render() {
     return;
   }
   cancelDirtyQueue();
+  const cycle = readCycleSettings();
   const token = ++pendingRender;
   const { width, height, iterations } = validateDimensions();
   setLoading(true);
@@ -598,7 +610,8 @@ async function render() {
       height,
       iterations,
       palette: paletteInput.value,
-      alternating: alternatingInput.checked,
+      cycleMode: cycle.rawValue,
+      cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
       centerX: view.centerX,
       centerY: view.centerY,
       scale: view.scale,
@@ -656,7 +669,8 @@ async function render() {
       height,
       iterations,
       palette: paletteInput.value,
-      alternating: alternatingInput.checked,
+      cycleMode: cycle.rawValue,
+      cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
       centerX: view.centerX,
       centerY: view.centerY,
       scale: view.scale,
@@ -751,7 +765,8 @@ canvas.addEventListener('pointermove', (event) => {
     height: frame.height,
     iterations: frame.iterations,
     palette: frame.palette,
-    alternating: frame.alternating,
+    cycleMode: cycle.rawValue,
+    cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
     centerX: view.centerX,
     centerY: view.centerY,
     scale: frame.scale,
@@ -843,11 +858,13 @@ for (const input of [sizeInput, iterationsInput, paletteInput]) {
   });
 }
 
-alternatingInput.addEventListener('change', () => {
-  cancelDirtyQueue();
-  lastFrame = null;
-  scheduleRender();
-});
+for (const input of [cycleLengthInput, cyclePhaseInput]) {
+  input.addEventListener('change', () => {
+    cancelDirtyQueue();
+    lastFrame = null;
+    scheduleRender();
+  });
+}
 
 progressInput.addEventListener('change', () => {
   scheduleRender();
