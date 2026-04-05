@@ -33,8 +33,12 @@ let dragState = null;
 let pendingRender = 0;
 
 const sizeOptions = [];
-for (let size = 128; size <= 4096; size += 128) {
+for (let size = 128; size <= 4096; size *= 2) {
   sizeOptions.push(size);
+  const intermediate = Math.floor(size * 1.5);
+  if (intermediate < 4096) {
+    sizeOptions.push(intermediate);
+  }
 }
 
 const iterationOptions = [];
@@ -210,7 +214,7 @@ async function render() {
   const ptr = 0;
   const buffer = new Uint32Array(wasmMemory.buffer, ptr, width * height);
   const showProgress = progressInput.checked;
-  const batchRows = showProgress ? Math.min(32, height) : height;
+  const batchRows = showProgress ? Math.max(1, Math.ceil(height / 16)) : height;
   let completedRows = 0;
   let lastPaint = performance.now();
 
