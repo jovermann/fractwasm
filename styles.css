@@ -130,12 +130,13 @@ input[type="checkbox"] {
   display: inline-flex;
   align-items: center;
   min-height: 30px;
-  padding: 4px 10px;
+  padding: 6px 8px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(16, 21, 29, 0.88);
+  border-radius: 4px;
+  background: #10151d;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.2;
   white-space: nowrap;
 }
 
