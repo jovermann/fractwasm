@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FractWasm</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">FractWasm</div>
+      <label class="date-field">W
+        <input id="widthInput" type="number" min="160" max="2048" step="1" value="960" />
+      </label>
+      <label class="date-field">H
+        <input id="heightInput" type="number" min="120" max="2048" step="1" value="640" />
+      </label>
+      <label class="date-field">Iterations
+        <input id="iterationsInput" type="number" min="32" max="8192" step="32" value="512" />
+      </label>
+      <label class="date-field">Palette
+        <select id="paletteInput">
+          <option value="plasma">Plasma</option>
+          <option value="inferno">Inferno</option>
+          <option value="viridis">Viridis</option>
+          <option value="cividis">Cividis</option>
+          <option value="hotmetal">Hot Metal</option>
+          <option value="ocean">Ocean</option>
+          <option value="greys">Greys</option>
+        </select>
+      </label>
+      <button id="resetViewButton" class="btn">Reset View</button>
+      <button id="renderButton" class="btn accent">Render</button>
+      <div class="topbar-spacer"></div>
+      <div id="statusText" class="status-pill">Loading renderer…</div>
+    </header>
+
+    <main>
+      <section class="viewer-shell">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <div class="panel-title">Mandelbrot Explorer</div>
+            <div class="panel-title-meta">Drag to pan, wheel to zoom, double click to recenter</div>
+          </div>
+        </div>
+        <div class="viewer-stage">
+          <canvas id="fractalCanvas" aria-label="Mandelbrot set"></canvas>
+          <div id="loadingOverlay" class="loading-overlay" hidden>Rendering…</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
