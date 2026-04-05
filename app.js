@@ -1,4 +1,5 @@
 const MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
+const UNKNOWN_ITER = 0xffffffff;
 const DEFAULT_VIEW = {
   centerX: -0.5,
   centerY: 0,
@@ -19,6 +20,7 @@ const iterationsInput = document.getElementById('iterationsInput');
 const paletteInput = document.getElementById('paletteInput');
 const cycleLengthInput = document.getElementById('cycleLengthInput');
 const cyclePhaseInput = document.getElementById('cyclePhaseInput');
+const algoInput = document.getElementById('algoInput');
 const progressInput = document.getElementById('progressInput');
 const renderButton = document.getElementById('renderButton');
 const resetViewButton = document.getElementById('resetViewButton');
@@ -63,6 +65,10 @@ function readCycleSettings() {
   const lengthText = alternating ? rawValue.slice(0, -4) : rawValue;
   const length = Math.max(1, Number.parseInt(lengthText, 10) || 256);
   return { length, alternating, rawValue };
+}
+
+function readAlgo() {
+  return String(algoInput.value || 'plain');
 }
 
 function clamp(value, min, max) {
@@ -178,6 +184,13 @@ function paintRegionIntoImage(image, iterations, startX, startY, regionWidth, re
       const i = y * regionWidth + x;
       const pixelIndex = ((startY + y) * image.width + startX + x) * 4;
       const iter = iterations[i];
+      if (iter === UNKNOWN_ITER) {
+        pixels[pixelIndex] = 18;
+        pixels[pixelIndex + 1] = 64;
+        pixels[pixelIndex + 2] = 160;
+        pixels[pixelIndex + 3] = 255;
+        continue;
+      }
       if (iter >= maxIterations) {
         pixels[pixelIndex] = 5;
         pixels[pixelIndex + 1] = 7;
@@ -312,6 +325,104 @@ function renderRegion(width, height, iterations, centerX, centerY, scale, startX
   return new Uint32Array(wasmMemory.buffer, 0, regionWidth * regionHeight);
 }
 
+function getFullImageBuffer(width, height) {
+  return new Uint32Array(wasmMemory.buffer, 0, width * height);
+}
+
+function clearFullImageBuffer(width, height) {
+  getFullImageBuffer(width, height).fill(UNKNOWN_ITER);
+}
+
+async function renderRegionPlainIntoImage(task) {
+  const {
+    width,
+    height,
+    iterations,
+    centerX,
+    centerY,
+    scale,
+    region,
+    image,
+    progress,
+    shouldAbort,
+  } = task;
+  const batchRows = progress ? Math.max(1, Math.ceil(region.height / 16)) : region.height;
+  let localRowsDone = 0;
+  let paintedPixels = 0;
+  while (localRowsDone < region.height) {
+    if (shouldAbort()) {
+      return { aborted: true, paintedPixels };
+    }
+    const rowCount = Math.min(batchRows, region.height - localRowsDone);
+    const regionBuffer = renderRegion(
+      width,
+      height,
+      iterations,
+      centerX,
+      centerY,
+      scale,
+      region.x,
+      region.y + localRowsDone,
+      region.width,
+      rowCount,
+    );
+    paintRegionIntoImage(image, regionBuffer, region.x, region.y + localRowsDone, region.width, rowCount, iterations);
+    localRowsDone += rowCount;
+    paintedPixels += region.width * rowCount;
+    if (progress) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  return { aborted: false, paintedPixels };
+}
+
+async function renderRegionIntoImage(task) {
+  return renderRegionPlainIntoImage(task);
+}
+
+async function renderFullImageSsg(width, height, iterations, centerX, centerY, scale, image, progress, shouldAbort) {
+  clearFullImageBuffer(width, height);
+  const stages = [16, 8, 4, 2, 1];
+  const totalSteps = (stages.length * 2) - 1;
+  let step = 0;
+  for (const stride of stages) {
+    if (shouldAbort()) {
+      return { aborted: true };
+    }
+    wasmInstance.exports.render_stride(
+      width,
+      height,
+      iterations,
+      centerX,
+      centerY,
+      scale,
+      stride,
+      1,
+    );
+    paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+    step += 1;
+    if (progress) {
+      ctx.putImageData(image, 0, 0);
+      setStatus(`SSG render stride ${stride} | step ${step}/${totalSteps}`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (stride > 1) {
+      if (shouldAbort()) {
+        return { aborted: true };
+      }
+      wasmInstance.exports.guess(width, height, stride);
+      paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+      step += 1;
+      if (progress) {
+        ctx.putImageData(image, 0, 0);
+        setStatus(`SSG guess stride ${stride} | step ${step}/${totalSteps}`);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+  }
+  return { aborted: false };
+}
+
 function shiftImageData(source, shiftX, shiftY) {
   const shifted = ctx.createImageData(source.width, source.height);
   const src = source.data;
@@ -402,6 +513,7 @@ function canRenderDirtyRegions(width, height, iterations) {
     && lastFrame.palette === paletteInput.value
     && lastFrame.cycleMode === readCycleSettings().rawValue
     && lastFrame.cyclePhase === (Number.parseFloat(cyclePhaseInput.value) || 0)
+    && lastFrame.algo === readAlgo()
     && lastFrame.scale === view.scale
     && lastFrame.centerX === view.centerX
     && lastFrame.centerY === view.centerY
@@ -467,49 +579,34 @@ async function processDirtyQueue(generation) {
         continue;
       }
       const showProgress = progressInput.checked;
-      const batchRows = showProgress ? Math.max(1, Math.ceil(task.region.height / 16)) : task.region.height;
-      let localRowsDone = 0;
       let lastPaint = performance.now();
-      while (localRowsDone < task.region.height) {
-        if (task.generation !== dirtyRenderGeneration || lastFrame !== task.frame || !task.frame.dirty) {
-          return;
+      const result = await renderRegionIntoImage({
+        width: task.frame.width,
+        height: task.frame.height,
+        iterations: task.frame.iterations,
+        centerX: task.frame.centerX,
+        centerY: task.frame.centerY,
+        scale: task.frame.scale,
+        algo: 'plain',
+        region: task.region,
+        image: task.frame.imageData,
+        progress: showProgress,
+        shouldAbort: () => task.generation !== dirtyRenderGeneration || lastFrame !== task.frame || !task.frame.dirty,
+      });
+      if (result.aborted) {
+        return;
+      }
+      task.frame.completedDirtyPixels += result.paintedPixels;
+      const now = performance.now();
+      if (showProgress && (now - lastPaint >= 200 || task.frame.completedDirtyPixels === task.frame.totalDirtyPixels)) {
+        if (lastFrame === task.frame) {
+          ctx.putImageData(task.frame.imageData, 0, 0);
+          const percent = task.frame.totalDirtyPixels > 0
+            ? Math.round((task.frame.completedDirtyPixels / task.frame.totalDirtyPixels) * 100)
+            : 100;
+          setStatus(`Rendering exposed regions | ${percent}%`);
         }
-        const rowCount = Math.min(batchRows, task.region.height - localRowsDone);
-        const regionBuffer = renderRegion(
-          task.frame.width,
-          task.frame.height,
-          task.frame.iterations,
-          task.frame.centerX,
-          task.frame.centerY,
-          task.frame.scale,
-          task.region.x,
-          task.region.y + localRowsDone,
-          task.region.width,
-          rowCount,
-        );
-        paintRegionIntoImage(
-          task.frame.imageData,
-          regionBuffer,
-          task.region.x,
-          task.region.y + localRowsDone,
-          task.region.width,
-          rowCount,
-          task.frame.iterations,
-        );
-        localRowsDone += rowCount;
-        task.frame.completedDirtyPixels += task.region.width * rowCount;
-        const now = performance.now();
-        if (showProgress && (now - lastPaint >= 200 || task.frame.completedDirtyPixels === task.frame.totalDirtyPixels)) {
-          if (lastFrame === task.frame) {
-            ctx.putImageData(task.frame.imageData, 0, 0);
-            const percent = task.frame.totalDirtyPixels > 0
-              ? Math.round((task.frame.completedDirtyPixels / task.frame.totalDirtyPixels) * 100)
-              : 100;
-            setStatus(`Rendering exposed regions | ${percent}%`);
-          }
-          lastPaint = now;
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
+        lastPaint = now;
       }
       if (!showProgress && lastFrame === task.frame) {
         ctx.putImageData(task.frame.imageData, 0, 0);
@@ -551,6 +648,7 @@ async function render() {
   }
   cancelDirtyQueue();
   const cycle = readCycleSettings();
+  const algo = readAlgo();
   const token = ++pendingRender;
   const { width, height, iterations } = validateDimensions();
   setLoading(true);
@@ -570,36 +668,29 @@ async function render() {
     ctx.putImageData(image, 0, 0);
 
     for (const region of regions) {
-      const batchRows = showProgress ? Math.max(1, Math.ceil(region.height / 16)) : region.height;
-      let localRowsDone = 0;
-      while (localRowsDone < region.height) {
-        const rowCount = Math.min(batchRows, region.height - localRowsDone);
-        const regionBuffer = renderRegion(
-          width,
-          height,
-          iterations,
-          view.centerX,
-          view.centerY,
-          view.scale,
-          region.x,
-          region.y + localRowsDone,
-          region.width,
-          rowCount,
-        );
-        paintRegionIntoImage(image, regionBuffer, region.x, region.y + localRowsDone, region.width, rowCount, iterations);
-        localRowsDone += rowCount;
-        completedArea += region.width * rowCount;
-        if (token !== pendingRender) {
-          return;
-        }
-        const now = performance.now();
-        if (showProgress && (now - lastPaint >= 200 || completedArea === totalArea)) {
-          ctx.putImageData(image, 0, 0);
-          const percent = totalArea > 0 ? Math.round((completedArea / totalArea) * 100) : 100;
-          setStatus(`Rendering exposed regions | ${percent}%`);
-          lastPaint = now;
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
+      const result = await renderRegionIntoImage({
+        width,
+        height,
+        iterations,
+        centerX: view.centerX,
+        centerY: view.centerY,
+        scale: view.scale,
+        algo: 'plain',
+        region,
+        image,
+        progress: showProgress,
+        shouldAbort: () => token !== pendingRender,
+      });
+      if (result.aborted) {
+        return;
+      }
+      completedArea += result.paintedPixels;
+      const now = performance.now();
+      if (showProgress && (now - lastPaint >= 200 || completedArea === totalArea)) {
+        ctx.putImageData(image, 0, 0);
+        const percent = totalArea > 0 ? Math.round((completedArea / totalArea) * 100) : 100;
+        setStatus(`Rendering exposed regions | ${percent}%`);
+        lastPaint = now;
       }
     }
     if (!showProgress) {
@@ -612,6 +703,7 @@ async function render() {
       palette: paletteInput.value,
       cycleMode: cycle.rawValue,
       cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
+      algo,
       centerX: view.centerX,
       centerY: view.centerY,
       scale: view.scale,
@@ -621,9 +713,6 @@ async function render() {
     };
   } else {
     const showProgress = progressInput.checked;
-    const batchRows = showProgress ? Math.max(1, Math.ceil(height / 16)) : height;
-    let completedRows = 0;
-    let lastPaint = performance.now();
     const image = ctx.createImageData(width, height);
     fillBlue(image);
     canvas.width = width;
@@ -631,39 +720,49 @@ async function render() {
     if (showProgress) {
       ctx.putImageData(image, 0, 0);
     }
-
-    while (completedRows < height) {
-      const rowCount = Math.min(batchRows, height - completedRows);
-      const regionBuffer = renderRegion(
+    if (algo === 'ssg') {
+      const result = await renderFullImageSsg(
         width,
         height,
         iterations,
         view.centerX,
         view.centerY,
         view.scale,
-        0,
-        completedRows,
-        width,
-        rowCount,
+        image,
+        showProgress,
+        () => token !== pendingRender,
       );
-      paintRegionIntoImage(image, regionBuffer, 0, completedRows, width, rowCount, iterations);
-      completedRows += rowCount;
-      if (token !== pendingRender) {
+      if (result.aborted) {
         return;
       }
-      const now = performance.now();
-      if (showProgress && (now - lastPaint >= 200 || completedRows === height)) {
+      if (!showProgress) {
         ctx.putImageData(image, 0, 0);
-        const percent = Math.round((completedRows / height) * 100);
-        setStatus(`Rendering ${width}×${height} at ${iterations} iterations | ${percent}%`);
-        lastPaint = now;
-        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    } else {
+      const result = await renderRegionIntoImage({
+        width,
+        height,
+        iterations,
+        centerX: view.centerX,
+        centerY: view.centerY,
+        scale: view.scale,
+        algo: 'plain',
+        region: { x: 0, y: 0, width, height },
+        image,
+        progress: showProgress,
+        shouldAbort: () => token !== pendingRender,
+      });
+      if (result.aborted) {
+        return;
+      }
+      if (showProgress) {
+        ctx.putImageData(image, 0, 0);
+        setStatus(`Rendering ${width}×${height} at ${iterations} iterations | 100%`);
+      } else {
+        ctx.putImageData(image, 0, 0);
       }
     }
 
-    if (!showProgress) {
-      ctx.putImageData(image, 0, 0);
-    }
     lastFrame = {
       width,
       height,
@@ -671,6 +770,7 @@ async function render() {
       palette: paletteInput.value,
       cycleMode: cycle.rawValue,
       cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
+      algo,
       centerX: view.centerX,
       centerY: view.centerY,
       scale: view.scale,
@@ -768,6 +868,7 @@ canvas.addEventListener('pointermove', (event) => {
     palette: frame.palette,
     cycleMode: cycle.rawValue,
     cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
+    algo: readAlgo(),
     centerX: view.centerX,
     centerY: view.centerY,
     scale: frame.scale,
@@ -842,7 +943,7 @@ resetViewButton.addEventListener('click', () => {
   });
 });
 
-for (const input of [sizeInput, iterationsInput, paletteInput]) {
+for (const input of [sizeInput, iterationsInput, paletteInput, algoInput]) {
   input.addEventListener('change', () => {
     if (input === sizeInput) {
       const previousSize = Number.parseInt(sizeInput.dataset.previousValue || sizeInput.value, 10);
