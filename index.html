@@ -61,6 +61,13 @@
           <option value="ssg">Super Solid Guessing</option>
         </select>
       </label>
+      <label class="date-field">Mode
+        <select id="modeInput">
+          <option value="mandelbrot" selected>Mandelbrot</option>
+          <option value="mand-center-julia">MandCenter+Julia</option>
+          <option value="mand-mouse-julia">MandMouse+Julia</option>
+        </select>
+      </label>
       <label class="date-field">
         <input id="progressInput" type="checkbox" checked />
         Progress
@@ -79,8 +86,15 @@
             <div class="panel-title-meta">Drag to pan, wheel to zoom, double click to recenter</div>
           </div>
         </div>
-        <div class="viewer-stage">
-          <canvas id="fractalCanvas" aria-label="Mandelbrot set"></canvas>
+        <div class="viewer-stage" id="viewerStage">
+          <div class="viewer-pane">
+            <div class="viewer-label">Mandelbrot</div>
+            <canvas id="fractalCanvas" aria-label="Mandelbrot set"></canvas>
+          </div>
+          <div class="viewer-pane julia-pane" id="juliaPane" hidden>
+            <div class="viewer-label">Julia</div>
+            <canvas id="juliaCanvas" aria-label="Julia set"></canvas>
+          </div>
           <div id="loadingOverlay" class="loading-overlay" hidden>Rendering…</div>
         </div>
       </section>

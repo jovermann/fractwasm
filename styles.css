@@ -103,6 +103,10 @@ select {
   width: 11rem;
 }
 
+#modeInput {
+  width: 12rem;
+}
+
 input[type="checkbox"] {
   accent-color: var(--accent);
   inline-size: 14px;
@@ -187,9 +191,9 @@ main {
 
 .viewer-stage {
   position: relative;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   min-height: calc(100vh - 118px);
   padding: 10px;
   background:
@@ -197,7 +201,28 @@ main {
     linear-gradient(180deg, rgba(15, 18, 24, 0.42), rgba(15, 18, 24, 0.92));
 }
 
-#fractalCanvas {
+.viewer-stage.dual {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.viewer-pane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.viewer-label {
+  align-self: stretch;
+  color: #8fa0b4;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#fractalCanvas,
+#juliaCanvas {
   display: block;
   max-width: 100%;
   max-height: calc(100vh - 160px);
@@ -240,7 +265,12 @@ main {
     min-height: calc(100vh - 176px);
   }
 
-  #fractalCanvas {
+  .viewer-stage.dual {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #fractalCanvas,
+  #juliaCanvas {
     max-height: calc(100vh - 230px);
   }
 }

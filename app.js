@@ -21,13 +21,18 @@ const paletteInput = document.getElementById('paletteInput');
 const cycleLengthInput = document.getElementById('cycleLengthInput');
 const cyclePhaseInput = document.getElementById('cyclePhaseInput');
 const algoInput = document.getElementById('algoInput');
+const modeInput = document.getElementById('modeInput');
 const progressInput = document.getElementById('progressInput');
 const renderButton = document.getElementById('renderButton');
 const resetViewButton = document.getElementById('resetViewButton');
 const statusText = document.getElementById('statusText');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const canvas = document.getElementById('fractalCanvas');
+const juliaCanvas = document.getElementById('juliaCanvas');
+const juliaPane = document.getElementById('juliaPane');
+const viewerStage = document.getElementById('viewerStage');
 const ctx = canvas.getContext('2d', { alpha: false });
+const juliaCtx = juliaCanvas.getContext('2d', { alpha: false });
 
 let wasmInstance = null;
 let wasmMemory = null;
@@ -39,6 +44,9 @@ let dirtyRenderGeneration = 0;
 let dirtyRenderRunning = false;
 let dirtyRenderQueue = [];
 let dirtyRenderNeedsRestart = false;
+let juliaRenderToken = 0;
+let juliaScheduleTimer = null;
+let mouseJuliaPoint = null;
 
 const sizeOptions = [];
 for (let size = 128; size <= 2048; size *= 2) {
@@ -69,6 +77,10 @@ function readCycleSettings() {
 
 function readAlgo() {
   return String(algoInput.value || 'plain');
+}
+
+function readMode() {
+  return String(modeInput.value || 'mandelbrot');
 }
 
 function clamp(value, min, max) {
@@ -331,6 +343,75 @@ function getFullImageBuffer(width, height) {
 
 function clearFullImageBuffer(width, height) {
   getFullImageBuffer(width, height).fill(UNKNOWN_ITER);
+}
+
+function updateModeLayout() {
+  const dual = readMode() !== 'mandelbrot';
+  juliaPane.hidden = !dual;
+  viewerStage.classList.toggle('dual', dual);
+}
+
+function getJuliaParameter() {
+  const mode = readMode();
+  if (mode === 'mand-center-julia') {
+    return { real: view.centerX, imag: view.centerY };
+  }
+  if (mode === 'mand-mouse-julia') {
+    return mouseJuliaPoint || { real: view.centerX, imag: view.centerY };
+  }
+  return null;
+}
+
+function renderJuliaFull(width, height, iterations, cReal, cImag) {
+  wasmInstance.exports.render_julia(
+    width,
+    height,
+    iterations,
+    0,
+    0,
+    3.2 / width,
+    cReal,
+    cImag,
+    0,
+    0,
+    width,
+    height,
+  );
+  const image = juliaCtx.createImageData(width, height);
+  paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+  juliaCanvas.width = width;
+  juliaCanvas.height = height;
+  juliaCtx.putImageData(image, 0, 0);
+}
+
+async function renderJulia() {
+  if (!wasmInstance || !juliaCtx) {
+    return;
+  }
+  const mode = readMode();
+  if (mode === 'mandelbrot') {
+    return;
+  }
+  const { width, height, iterations } = validateDimensions();
+  const juliaParam = getJuliaParameter();
+  if (!juliaParam) {
+    return;
+  }
+  const token = ++juliaRenderToken;
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  if (token !== juliaRenderToken) {
+    return;
+  }
+  renderJuliaFull(width, height, iterations, juliaParam.real, juliaParam.imag);
+}
+
+function scheduleJuliaRender(delay = 80) {
+  window.clearTimeout(juliaScheduleTimer);
+  juliaScheduleTimer = window.setTimeout(() => {
+    renderJulia().catch((error) => {
+      setStatus(error.message);
+    });
+  }, delay);
 }
 
 function guessFromBuffer(width, height, stride) {
@@ -845,6 +926,7 @@ async function render() {
   setStatus(
     `Center ${view.centerX.toFixed(6)}, ${view.centerY.toFixed(6)} | Zoom ${zoom}× | ${elapsed.toFixed(1)} ms`,
   );
+  scheduleJuliaRender(0);
 }
 
 function scheduleRender() {
@@ -859,6 +941,7 @@ function scheduleRender() {
 
 async function initialize() {
   try {
+    updateModeLayout();
     populateSelect(sizeInput, sizeOptions, 1024);
     populateSelect(iterationsInput, iterationOptions, 500);
     sizeInput.dataset.previousValue = sizeInput.value;
@@ -942,6 +1025,9 @@ canvas.addEventListener('pointermove', (event) => {
   const percent = Math.round((dirtyPixels / (frame.width * frame.height)) * 100);
   setStatus(`Pan preview | ${percent}% dirty | rendering queue started`);
   queueDirtyRegions(lastFrame);
+  if (readMode() === 'mand-center-julia') {
+    scheduleJuliaRender();
+  }
 });
 
 canvas.addEventListener('pointerup', (event) => {
@@ -986,6 +1072,22 @@ canvas.addEventListener('dblclick', (event) => {
   scheduleRender();
 });
 
+canvas.addEventListener('pointermove', (event) => {
+  if (readMode() !== 'mand-mouse-julia') {
+    return;
+  }
+  mouseJuliaPoint = pointerToComplex(event);
+  scheduleJuliaRender();
+});
+
+canvas.addEventListener('pointerleave', () => {
+  if (readMode() !== 'mand-mouse-julia') {
+    return;
+  }
+  mouseJuliaPoint = null;
+  scheduleJuliaRender();
+});
+
 renderButton.addEventListener('click', () => {
   render().catch((error) => {
     setLoading(false);
@@ -1027,6 +1129,11 @@ for (const input of [cycleLengthInput, cyclePhaseInput]) {
     scheduleRender();
   });
 }
+
+modeInput.addEventListener('change', () => {
+  updateModeLayout();
+  scheduleJuliaRender(0);
+});
 
 progressInput.addEventListener('change', () => {
   scheduleRender();
