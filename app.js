@@ -47,6 +47,7 @@ let dirtyRenderNeedsRestart = false;
 let juliaRenderToken = 0;
 let juliaScheduleTimer = null;
 let mouseJuliaPoint = null;
+let sceneVersion = 0;
 
 const sizeOptions = [];
 for (let size = 128; size <= 2048; size *= 2) {
@@ -351,6 +352,12 @@ function updateModeLayout() {
   viewerStage.classList.toggle('dual', dual);
 }
 
+function invalidateScene() {
+  sceneVersion += 1;
+  juliaRenderToken += 1;
+  window.clearTimeout(juliaScheduleTimer);
+}
+
 function getJuliaParameter() {
   const mode = readMode();
   if (mode === 'mand-center-julia') {
@@ -398,8 +405,9 @@ async function renderJulia() {
     return;
   }
   const token = ++juliaRenderToken;
+  const version = sceneVersion;
   await new Promise((resolve) => requestAnimationFrame(resolve));
-  if (token !== juliaRenderToken) {
+  if (token !== juliaRenderToken || version !== sceneVersion) {
     return;
   }
   renderJuliaFull(width, height, iterations, juliaParam.real, juliaParam.imag);
@@ -787,6 +795,7 @@ async function render() {
   if (!wasmInstance || !wasmMemory) {
     return;
   }
+  invalidateScene();
   cancelDirtyQueue();
   const cycle = readCycleSettings();
   const algo = readAlgo();
@@ -1059,6 +1068,7 @@ canvas.addEventListener('wheel', (event) => {
   view.scale *= zoomFactor;
   view.centerX = point.real - (point.px - canvas.width / 2) * view.scale;
   view.centerY = point.imag - (point.py - canvas.height / 2) * view.scale;
+  invalidateScene();
   lastFrame = null;
   scheduleRender();
 }, { passive: false });
@@ -1068,6 +1078,7 @@ canvas.addEventListener('dblclick', (event) => {
   view.centerX = point.real;
   view.centerY = point.imag;
   view.scale *= 0.55;
+  invalidateScene();
   lastFrame = null;
   scheduleRender();
 });
@@ -1097,6 +1108,7 @@ renderButton.addEventListener('click', () => {
 
 resetViewButton.addEventListener('click', () => {
   resetView();
+  invalidateScene();
   cancelDirtyQueue();
   lastFrame = null;
   render().catch((error) => {
@@ -1115,6 +1127,7 @@ for (const input of [sizeInput, iterationsInput, paletteInput, algoInput]) {
       syncDefaultScale();
     }
     if (input !== paletteInput) {
+      invalidateScene();
       cancelDirtyQueue();
       lastFrame = null;
     }
@@ -1124,6 +1137,7 @@ for (const input of [sizeInput, iterationsInput, paletteInput, algoInput]) {
 
 for (const input of [cycleLengthInput, cyclePhaseInput]) {
   input.addEventListener('change', () => {
+    invalidateScene();
     cancelDirtyQueue();
     lastFrame = null;
     scheduleRender();
@@ -1131,6 +1145,7 @@ for (const input of [cycleLengthInput, cyclePhaseInput]) {
 }
 
 modeInput.addEventListener('change', () => {
+  invalidateScene();
   updateModeLayout();
   scheduleJuliaRender(0);
 });
