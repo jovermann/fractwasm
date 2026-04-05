@@ -35,6 +35,7 @@ let lastFrame = null;
 let dirtyRenderGeneration = 0;
 let dirtyRenderRunning = false;
 let dirtyRenderQueue = [];
+let dirtyRenderNeedsRestart = false;
 
 const sizeOptions = [];
 for (let size = 128; size <= 2048; size *= 2) {
@@ -206,6 +207,7 @@ function cloneImageData(source) {
 function cancelDirtyQueue() {
   dirtyRenderGeneration += 1;
   dirtyRenderQueue = [];
+  dirtyRenderNeedsRestart = false;
 }
 
 function fillBlueRegion(image, startX, startY, regionWidth, regionHeight) {
@@ -219,6 +221,69 @@ function fillBlueRegion(image, startX, startY, regionWidth, regionHeight) {
       pixels[pixelIndex + 3] = 255;
     }
   }
+}
+
+function isBluePixel(pixels, pixelIndex) {
+  return (
+    pixels[pixelIndex] === 18
+    && pixels[pixelIndex + 1] === 64
+    && pixels[pixelIndex + 2] === 160
+    && pixels[pixelIndex + 3] === 255
+  );
+}
+
+function extractDirtyRegionsFromImage(image) {
+  const regions = [];
+  const pixels = image.data;
+  let activeRuns = [];
+  for (let y = 0; y < image.height; y += 1) {
+    const rowRuns = [];
+    let x = 0;
+    while (x < image.width) {
+      const pixelIndex = (y * image.width + x) * 4;
+      if (!isBluePixel(pixels, pixelIndex)) {
+        x += 1;
+        continue;
+      }
+      const startX = x;
+      x += 1;
+      while (x < image.width && isBluePixel(pixels, (y * image.width + x) * 4)) {
+        x += 1;
+      }
+      rowRuns.push({ x: startX, width: x - startX });
+    }
+
+    const nextActiveRuns = [];
+    for (const run of rowRuns) {
+      const existing = activeRuns.find((entry) => entry.x === run.x && entry.width === run.width);
+      if (existing) {
+        existing.height += 1;
+        existing.touched = true;
+        nextActiveRuns.push(existing);
+      } else {
+        nextActiveRuns.push({ x: run.x, y, width: run.width, height: 1, touched: true });
+      }
+    }
+
+    for (const entry of activeRuns) {
+      if (!entry.touched) {
+        regions.push({ x: entry.x, y: entry.y, width: entry.width, height: entry.height });
+      }
+    }
+
+    activeRuns = nextActiveRuns.map((entry) => ({
+      x: entry.x,
+      y: entry.y,
+      width: entry.width,
+      height: entry.height,
+      touched: false,
+    }));
+  }
+
+  for (const entry of activeRuns) {
+    regions.push({ x: entry.x, y: entry.y, width: entry.width, height: entry.height });
+  }
+  return regions;
 }
 
 function renderRegion(width, height, iterations, centerX, centerY, scale, startX, startY, regionWidth, regionHeight) {
@@ -260,17 +325,38 @@ function shiftImageData(source, shiftX, shiftY) {
 
 function buildExposedRegions(width, height, shiftX, shiftY) {
   const regions = [];
+  const leftStrip = shiftX > 0 ? shiftX : 0;
+  const rightStrip = shiftX < 0 ? -shiftX : 0;
   if (shiftX > 0) {
     regions.push({ x: 0, y: 0, width: shiftX, height });
   } else if (shiftX < 0) {
     regions.push({ x: width + shiftX, y: 0, width: -shiftX, height });
   }
   if (shiftY > 0) {
-    regions.push({ x: 0, y: 0, width, height: shiftY });
+    regions.push({ x: leftStrip, y: 0, width: width - leftStrip - rightStrip, height: shiftY });
   } else if (shiftY < 0) {
-    regions.push({ x: 0, y: height + shiftY, width, height: -shiftY });
+    regions.push({ x: leftStrip, y: height + shiftY, width: width - leftStrip - rightStrip, height: -shiftY });
   }
   return regions.filter((region) => region.width > 0 && region.height > 0);
+}
+
+function translateDirtyRegions(regions, width, height, shiftX, shiftY) {
+  if (!Array.isArray(regions) || regions.length === 0) {
+    return [];
+  }
+  const translated = [];
+  for (const region of regions) {
+    const x0 = Math.max(0, region.x + shiftX);
+    const y0 = Math.max(0, region.y + shiftY);
+    const x1 = Math.min(width, region.x + shiftX + region.width);
+    const y1 = Math.min(height, region.y + shiftY + region.height);
+    const clippedWidth = x1 - x0;
+    const clippedHeight = y1 - y0;
+    if (clippedWidth > 0 && clippedHeight > 0) {
+      translated.push({ x: x0, y: y0, width: clippedWidth, height: clippedHeight });
+    }
+  }
+  return translated;
 }
 
 function previewPanFrame(baseFrame, shiftX, shiftY) {
@@ -279,7 +365,15 @@ function previewPanFrame(baseFrame, shiftX, shiftY) {
   }
 
   const image = shiftImageData(baseFrame.imageData, shiftX, shiftY);
-  const regions = buildExposedRegions(baseFrame.width, baseFrame.height, shiftX, shiftY);
+  const shiftedDirtyRegions = translateDirtyRegions(
+    baseFrame.dirtyRegions,
+    baseFrame.width,
+    baseFrame.height,
+    shiftX,
+    shiftY,
+  );
+  const exposedRegions = buildExposedRegions(baseFrame.width, baseFrame.height, shiftX, shiftY);
+  const regions = shiftedDirtyRegions.concat(exposedRegions);
   for (const region of regions) {
     fillBlueRegion(image, region.x, region.y, region.width, region.height);
   }
@@ -307,6 +401,13 @@ function canRenderDirtyRegions(width, height, iterations) {
 
 function queueDirtyRegions(frame) {
   cancelDirtyQueue();
+  frame.dirtyRegions = extractDirtyRegionsFromImage(frame.imageData);
+  if (frame.dirtyRegions.length === 0) {
+    frame.dirty = false;
+    frame.completedDirtyPixels = 0;
+    frame.totalDirtyPixels = 0;
+    return;
+  }
   const generation = dirtyRenderGeneration;
   frame.completedDirtyPixels = 0;
   frame.totalDirtyPixels = frame.dirtyRegions.reduce((sum, region) => sum + region.width * region.height, 0);
@@ -315,7 +416,26 @@ function queueDirtyRegions(frame) {
     frame,
     region,
   }));
-  processDirtyQueue(generation);
+  dirtyRenderNeedsRestart = true;
+  kickDirtyQueue();
+}
+
+function restartDirtyRegionsFromCurrentFrame() {
+  if (!lastFrame || !lastFrame.dirty || !Array.isArray(lastFrame.dirtyRegions) || lastFrame.dirtyRegions.length === 0) {
+    return;
+  }
+  queueDirtyRegions(lastFrame);
+}
+
+function kickDirtyQueue() {
+  if (dirtyRenderRunning) {
+    return;
+  }
+  if (dirtyRenderQueue.length === 0) {
+    return;
+  }
+  dirtyRenderNeedsRestart = false;
+  processDirtyQueue(dirtyRenderGeneration);
 }
 
 async function processDirtyQueue(generation) {
@@ -394,8 +514,10 @@ async function processDirtyQueue(generation) {
     }
   } finally {
     dirtyRenderRunning = false;
-    if (dirtyRenderQueue.length > 0) {
-      processDirtyQueue(dirtyRenderGeneration);
+    if (dirtyRenderNeedsRestart || dirtyRenderQueue.length > 0) {
+      window.setTimeout(() => {
+        kickDirtyQueue();
+      }, 0);
     }
   }
 }
@@ -591,8 +713,10 @@ canvas.addEventListener('pointerdown', (event) => {
     baseFrame: lastFrame ? {
       ...lastFrame,
       imageData: cloneImageData(lastFrame.imageData),
-      dirty: false,
-      dirtyRegions: [],
+      dirty: Boolean(lastFrame.dirty),
+      dirtyRegions: Array.isArray(lastFrame.dirtyRegions)
+        ? lastFrame.dirtyRegions.map((region) => ({ ...region }))
+        : [],
     } : null,
   };
   cancelDirtyQueue();
@@ -650,7 +774,9 @@ canvas.addEventListener('pointerup', (event) => {
   canvas.classList.remove('dragging');
   canvas.releasePointerCapture(event.pointerId);
   if (lastFrame && lastFrame.dirty) {
+    restartDirtyRegionsFromCurrentFrame();
     setStatus('Pan preview ready | queued region rendering continues');
+    kickDirtyQueue();
   }
 });
 
