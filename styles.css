@@ -213,6 +213,10 @@ main {
   min-width: 0;
 }
 
+.viewer-pane[hidden] {
+  display: none !important;
+}
+
 .viewer-label {
   align-self: stretch;
   color: #8fa0b4;

@@ -48,6 +48,7 @@ let juliaRenderToken = 0;
 let juliaScheduleTimer = null;
 let mouseJuliaPoint = null;
 let sceneVersion = 0;
+let wasmWorkQueue = Promise.resolve();
 
 const sizeOptions = [];
 for (let size = 128; size <= 2048; size *= 2) {
@@ -82,6 +83,20 @@ function readAlgo() {
 
 function readMode() {
   return String(modeInput.value || 'mandelbrot');
+}
+
+async function withWasmLock(work) {
+  const previous = wasmWorkQueue;
+  let release;
+  wasmWorkQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+  }
 }
 
 function clamp(value, min, max) {
@@ -504,11 +519,16 @@ async function renderJulia() {
   if (token !== juliaRenderToken || version !== sceneVersion) {
     return;
   }
-  if (readAlgo() === 'ssg') {
-    await renderJuliaSsg(width, height, iterations, juliaParam.real, juliaParam.imag);
-    return;
-  }
-  renderJuliaFull(width, height, iterations, juliaParam.real, juliaParam.imag);
+  await withWasmLock(async () => {
+    if (token !== juliaRenderToken || version !== sceneVersion) {
+      return;
+    }
+    if (readAlgo() === 'ssg') {
+      await renderJuliaSsg(width, height, iterations, juliaParam.real, juliaParam.imag);
+      return;
+    }
+    renderJuliaFull(width, height, iterations, juliaParam.real, juliaParam.imag);
+  });
 }
 
 function scheduleJuliaRender(delay = 80) {
@@ -827,7 +847,7 @@ async function processDirtyQueue(generation) {
       }
       const showProgress = progressInput.checked;
       let lastPaint = performance.now();
-      const result = await renderRegionIntoImage({
+      const result = await withWasmLock(() => renderRegionIntoImage({
         width: task.frame.width,
         height: task.frame.height,
         iterations: task.frame.iterations,
@@ -839,7 +859,7 @@ async function processDirtyQueue(generation) {
         image: task.frame.imageData,
         progress: showProgress,
         shouldAbort: () => task.generation !== dirtyRenderGeneration || lastFrame !== task.frame || !task.frame.dirty,
-      });
+      }));
       if (result.aborted) {
         return;
       }
@@ -903,130 +923,132 @@ async function render() {
   setStatus(`Rendering ${width}×${height} at ${iterations} iterations`);
   await new Promise((resolve) => requestAnimationFrame(resolve));
   const started = performance.now();
-  if (canRenderDirtyRegions(width, height, iterations)) {
-    const showProgress = progressInput.checked;
-    const image = ctx.createImageData(width, height);
-    image.data.set(lastFrame.imageData.data);
-    const regions = lastFrame.dirtyRegions.slice();
-    let completedArea = 0;
-    const totalArea = regions.reduce((sum, region) => sum + region.width * region.height, 0);
-    let lastPaint = performance.now();
-    canvas.width = width;
-    canvas.height = height;
-    ctx.putImageData(image, 0, 0);
+  await withWasmLock(async () => {
+    if (canRenderDirtyRegions(width, height, iterations)) {
+      const showProgress = progressInput.checked;
+      const image = ctx.createImageData(width, height);
+      image.data.set(lastFrame.imageData.data);
+      const regions = lastFrame.dirtyRegions.slice();
+      let completedArea = 0;
+      const totalArea = regions.reduce((sum, region) => sum + region.width * region.height, 0);
+      let lastPaint = performance.now();
+      canvas.width = width;
+      canvas.height = height;
+      ctx.putImageData(image, 0, 0);
 
-    for (const region of regions) {
-      const result = await renderRegionIntoImage({
-        width,
-        height,
-        iterations,
-        centerX: view.centerX,
-        centerY: view.centerY,
-        scale: view.scale,
-        algo: 'plain',
-        region,
-        image,
-        progress: showProgress,
-        shouldAbort: () => token !== pendingRender,
-      });
-      if (result.aborted) {
-        return;
-      }
-      completedArea += result.paintedPixels;
-      const now = performance.now();
-      if (showProgress && (now - lastPaint >= 200 || completedArea === totalArea)) {
-        ctx.putImageData(image, 0, 0);
-        const percent = totalArea > 0 ? Math.round((completedArea / totalArea) * 100) : 100;
-        setStatus(`Rendering exposed regions | ${percent}%`);
-        lastPaint = now;
-      }
-    }
-    if (!showProgress) {
-      ctx.putImageData(image, 0, 0);
-    }
-    lastFrame = {
-      width,
-      height,
-      iterations,
-      palette: paletteInput.value,
-      cycleMode: cycle.rawValue,
-      cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
-      algo,
-      centerX: view.centerX,
-      centerY: view.centerY,
-      scale: view.scale,
-      imageData: image,
-      dirty: false,
-      dirtyRegions: [],
-    };
-  } else {
-    const showProgress = progressInput.checked;
-    const image = ctx.createImageData(width, height);
-    fillBlue(image);
-    canvas.width = width;
-    canvas.height = height;
-    if (showProgress) {
-      ctx.putImageData(image, 0, 0);
-    }
-    if (algo === 'ssg') {
-      const result = await renderFullImageSsg(
-        width,
-        height,
-        iterations,
-        view.centerX,
-        view.centerY,
-        view.scale,
-        image,
-        showProgress,
-        () => token !== pendingRender,
-      );
-      if (result.aborted) {
-        return;
+      for (const region of regions) {
+        const result = await renderRegionIntoImage({
+          width,
+          height,
+          iterations,
+          centerX: view.centerX,
+          centerY: view.centerY,
+          scale: view.scale,
+          algo: 'plain',
+          region,
+          image,
+          progress: showProgress,
+          shouldAbort: () => token !== pendingRender,
+        });
+        if (result.aborted) {
+          return;
+        }
+        completedArea += result.paintedPixels;
+        const now = performance.now();
+        if (showProgress && (now - lastPaint >= 200 || completedArea === totalArea)) {
+          ctx.putImageData(image, 0, 0);
+          const percent = totalArea > 0 ? Math.round((completedArea / totalArea) * 100) : 100;
+          setStatus(`Rendering exposed regions | ${percent}%`);
+          lastPaint = now;
+        }
       }
       if (!showProgress) {
         ctx.putImageData(image, 0, 0);
       }
-    } else {
-      const result = await renderRegionIntoImage({
+      lastFrame = {
         width,
         height,
         iterations,
+        palette: paletteInput.value,
+        cycleMode: cycle.rawValue,
+        cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
+        algo,
         centerX: view.centerX,
         centerY: view.centerY,
         scale: view.scale,
-        algo: 'plain',
-        region: { x: 0, y: 0, width, height },
-        image,
-        progress: showProgress,
-        shouldAbort: () => token !== pendingRender,
-      });
-      if (result.aborted) {
-        return;
-      }
+        imageData: image,
+        dirty: false,
+        dirtyRegions: [],
+      };
+    } else {
+      const showProgress = progressInput.checked;
+      const image = ctx.createImageData(width, height);
+      fillBlue(image);
+      canvas.width = width;
+      canvas.height = height;
       if (showProgress) {
         ctx.putImageData(image, 0, 0);
-        setStatus(`Rendering ${width}×${height} at ${iterations} iterations | 100%`);
-      } else {
-        ctx.putImageData(image, 0, 0);
       }
-    }
+      if (algo === 'ssg') {
+        const result = await renderFullImageSsg(
+          width,
+          height,
+          iterations,
+          view.centerX,
+          view.centerY,
+          view.scale,
+          image,
+          showProgress,
+          () => token !== pendingRender,
+        );
+        if (result.aborted) {
+          return;
+        }
+        if (!showProgress) {
+          ctx.putImageData(image, 0, 0);
+        }
+      } else {
+        const result = await renderRegionIntoImage({
+          width,
+          height,
+          iterations,
+          centerX: view.centerX,
+          centerY: view.centerY,
+          scale: view.scale,
+          algo: 'plain',
+          region: { x: 0, y: 0, width, height },
+          image,
+          progress: showProgress,
+          shouldAbort: () => token !== pendingRender,
+        });
+        if (result.aborted) {
+          return;
+        }
+        if (showProgress) {
+          ctx.putImageData(image, 0, 0);
+          setStatus(`Rendering ${width}×${height} at ${iterations} iterations | 100%`);
+        } else {
+          ctx.putImageData(image, 0, 0);
+        }
+      }
 
-    lastFrame = {
-      width,
-      height,
-      iterations,
-      palette: paletteInput.value,
-      cycleMode: cycle.rawValue,
-      cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
-      algo,
-      centerX: view.centerX,
-      centerY: view.centerY,
-      scale: view.scale,
-      imageData: image,
-      dirty: false,
-      dirtyRegions: [],
-    };
-  }
+      lastFrame = {
+        width,
+        height,
+        iterations,
+        palette: paletteInput.value,
+        cycleMode: cycle.rawValue,
+        cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
+        algo,
+        centerX: view.centerX,
+        centerY: view.centerY,
+        scale: view.scale,
+        imageData: image,
+        dirty: false,
+        dirtyRegions: [],
+      };
+    }
+  });
   const elapsed = performance.now() - started;
   const zoom = (3.5 / (view.scale * width)).toFixed(2);
   setLoading(false);
