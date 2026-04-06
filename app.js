@@ -1,5 +1,4 @@
 const MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
-const UNKNOWN_ITER = 0xffffffff;
 const DEFAULT_VIEW = {
   centerX: -0.5,
   centerY: 0,
@@ -20,7 +19,6 @@ const iterationsInput = document.getElementById('iterationsInput');
 const paletteInput = document.getElementById('paletteInput');
 const cycleLengthInput = document.getElementById('cycleLengthInput');
 const cyclePhaseInput = document.getElementById('cyclePhaseInput');
-const algoInput = document.getElementById('algoInput');
 const modeInput = document.getElementById('modeInput');
 const progressInput = document.getElementById('progressInput');
 const renderButton = document.getElementById('renderButton');
@@ -75,10 +73,6 @@ function readCycleSettings() {
   const lengthText = alternating ? rawValue.slice(0, -4) : rawValue;
   const length = Math.max(1, Number.parseInt(lengthText, 10) || 256);
   return { length, alternating, rawValue };
-}
-
-function readAlgo() {
-  return String(algoInput.value || 'plain');
 }
 
 function readMode() {
@@ -212,13 +206,6 @@ function paintRegionIntoImage(image, iterations, startX, startY, regionWidth, re
       const i = y * regionWidth + x;
       const pixelIndex = ((startY + y) * image.width + startX + x) * 4;
       const iter = iterations[i];
-      if (iter === UNKNOWN_ITER) {
-        pixels[pixelIndex] = 18;
-        pixels[pixelIndex + 1] = 64;
-        pixels[pixelIndex + 2] = 160;
-        pixels[pixelIndex + 3] = 255;
-        continue;
-      }
       if (iter >= maxIterations) {
         pixels[pixelIndex] = 5;
         pixels[pixelIndex + 1] = 7;
@@ -357,50 +344,6 @@ function getFullImageBuffer(width, height) {
   return new Uint32Array(wasmMemory.buffer, 0, width * height);
 }
 
-function clearFullImageBuffer(width, height) {
-  getFullImageBuffer(width, height).fill(UNKNOWN_ITER);
-}
-
-function makeDisplayBufferFromStride(width, height, stride) {
-  const source = getFullImageBuffer(width, height);
-  const display = new Uint32Array(width * height);
-  for (let y = 0; y < height; y += 1) {
-    const sampleY = Math.min(height - 1, Math.floor(y / stride) * stride);
-    for (let x = 0; x < width; x += 1) {
-      const sampleX = Math.min(width - 1, Math.floor(x / stride) * stride);
-      let value = source[(sampleY * width) + sampleX];
-      if (value === UNKNOWN_ITER) {
-        const gridX = Math.floor(x / stride);
-        const gridY = Math.floor(y / stride);
-        for (let radius = 1; radius <= 3 && value === UNKNOWN_ITER; radius += 1) {
-          for (let gy = gridY - radius; gy <= gridY + radius && value === UNKNOWN_ITER; gy += 1) {
-            if (gy < 0 || (gy * stride) >= height) {
-              continue;
-            }
-            for (let gx = gridX - radius; gx <= gridX + radius; gx += 1) {
-              if (gx < 0 || (gx * stride) >= width) {
-                continue;
-              }
-              const probeX = Math.min(width - 1, gx * stride);
-              const probeY = Math.min(height - 1, gy * stride);
-              const probe = source[(probeY * width) + probeX];
-              if (probe !== UNKNOWN_ITER) {
-                value = probe;
-                break;
-              }
-            }
-          }
-        }
-      }
-      if (value === UNKNOWN_ITER) {
-        value = 0;
-      }
-      display[(y * width) + x] = value;
-    }
-  }
-  return display;
-}
-
 function updateModeLayout() {
   const dual = readMode() !== 'mandelbrot';
   juliaPane.hidden = !dual;
@@ -446,60 +389,6 @@ function renderJuliaFull(width, height, iterations, cReal, cImag) {
   juliaCtx.putImageData(image, 0, 0);
 }
 
-async function renderJuliaSsg(width, height, iterations, cReal, cImag) {
-  const image = juliaCtx.createImageData(width, height);
-  fillBlue(image);
-  juliaCanvas.width = width;
-  juliaCanvas.height = height;
-  if (progressInput.checked) {
-    juliaCtx.putImageData(image, 0, 0);
-  }
-  clearFullImageBuffer(width, height);
-  const stages = [16, 8, 4, 2, 1];
-  const totalSteps = (stages.length * 2) - 1;
-  let step = 0;
-  const token = juliaRenderToken;
-  for (const stride of stages) {
-    if (token !== juliaRenderToken) {
-      return;
-    }
-    wasmInstance.exports.render_julia_stride(
-      width,
-      height,
-      iterations,
-      0,
-      0,
-      3.2 / width,
-      cReal,
-      cImag,
-      stride,
-      1,
-    );
-    paintRegionIntoImage(image, makeDisplayBufferFromStride(width, height, stride), 0, 0, width, height, iterations);
-    step += 1;
-    if (progressInput.checked) {
-      juliaCtx.putImageData(image, 0, 0);
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    }
-    if (stride > 1) {
-      if (token !== juliaRenderToken) {
-        return;
-      }
-      guessFromBuffer(width, height, stride);
-      paintRegionIntoImage(image, makeDisplayBufferFromStride(width, height, Math.max(1, stride >> 1)), 0, 0, width, height, iterations);
-      step += 1;
-      if (progressInput.checked) {
-        juliaCtx.putImageData(image, 0, 0);
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      }
-    }
-  }
-  juliaCtx.putImageData(image, 0, 0);
-  if (progressInput.checked && token === juliaRenderToken) {
-    setStatus(`Julia SSG complete | ${totalSteps}/${totalSteps}`);
-  }
-}
-
 async function renderJulia() {
   if (!wasmInstance || !juliaCtx) {
     return;
@@ -523,10 +412,6 @@ async function renderJulia() {
     if (token !== juliaRenderToken || version !== sceneVersion) {
       return;
     }
-    if (readAlgo() === 'ssg') {
-      await renderJuliaSsg(width, height, iterations, juliaParam.real, juliaParam.imag);
-      return;
-    }
     renderJuliaFull(width, height, iterations, juliaParam.real, juliaParam.imag);
   });
 }
@@ -538,66 +423,6 @@ function scheduleJuliaRender(delay = 80) {
       setStatus(error.message);
     });
   }, delay);
-}
-
-function guessFromBuffer(width, height, stride) {
-  const buffer = getFullImageBuffer(width, height);
-  const half = Math.max(1, stride >> 1);
-  if (stride <= 1) {
-    return;
-  }
-  for (let y = stride; y + stride < height; y += stride) {
-    for (let x = stride; x + stride < width; x += stride) {
-      const ring = [];
-      let valid = true;
-      for (let gy = -1; gy <= 2 && valid; gy += 1) {
-        for (let gx = -1; gx <= 2; gx += 1) {
-          const px = x + gx * stride;
-          const py = y + gy * stride;
-          if (px < 0 || px >= width || py < 0 || py >= height) {
-            valid = false;
-            break;
-          }
-          const value = buffer[(py * width) + px];
-          if (value === UNKNOWN_ITER) {
-            valid = false;
-            break;
-          }
-          ring.push(value);
-        }
-      }
-      if (!valid) {
-        continue;
-      }
-      const first = ring[0];
-      let same = true;
-      for (let i = 1; i < ring.length; i += 1) {
-        if (ring[i] !== first) {
-          same = false;
-          break;
-        }
-      }
-      if (!same) {
-        continue;
-      }
-      for (let dy = 0; dy <= stride; dy += half) {
-        for (let dx = 0; dx <= stride; dx += half) {
-          if ((dx % stride === 0) && (dy % stride === 0)) {
-            continue;
-          }
-          const px = x + dx;
-          const py = y + dy;
-          if (px < 0 || px >= width || py < 0 || py >= height) {
-            continue;
-          }
-          const index = (py * width) + px;
-          if (buffer[index] === UNKNOWN_ITER) {
-            buffer[index] = first;
-          }
-        }
-      }
-    }
-  }
 }
 
 async function renderRegionPlainIntoImage(task) {
@@ -645,49 +470,6 @@ async function renderRegionPlainIntoImage(task) {
 
 async function renderRegionIntoImage(task) {
   return renderRegionPlainIntoImage(task);
-}
-
-async function renderFullImageSsg(width, height, iterations, centerX, centerY, scale, image, progress, shouldAbort) {
-  clearFullImageBuffer(width, height);
-  const stages = [16, 8, 4, 2, 1];
-  const totalSteps = (stages.length * 2) - 1;
-  let step = 0;
-  for (const stride of stages) {
-    if (shouldAbort()) {
-      return { aborted: true };
-    }
-    wasmInstance.exports.render_stride(
-      width,
-      height,
-      iterations,
-      centerX,
-      centerY,
-      scale,
-      stride,
-      1,
-    );
-    paintRegionIntoImage(image, makeDisplayBufferFromStride(width, height, stride), 0, 0, width, height, iterations);
-    step += 1;
-    if (progress) {
-      ctx.putImageData(image, 0, 0);
-      setStatus(`SSG render stride ${stride} | step ${step}/${totalSteps}`);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    if (stride > 1) {
-      if (shouldAbort()) {
-        return { aborted: true };
-      }
-      guessFromBuffer(width, height, stride);
-      paintRegionIntoImage(image, makeDisplayBufferFromStride(width, height, Math.max(1, stride >> 1)), 0, 0, width, height, iterations);
-      step += 1;
-      if (progress) {
-        ctx.putImageData(image, 0, 0);
-        setStatus(`SSG guess stride ${stride} | step ${step}/${totalSteps}`);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    }
-  }
-  return { aborted: false };
 }
 
 function shiftImageData(source, shiftX, shiftY) {
@@ -780,7 +562,6 @@ function canRenderDirtyRegions(width, height, iterations) {
     && lastFrame.palette === paletteInput.value
     && lastFrame.cycleMode === readCycleSettings().rawValue
     && lastFrame.cyclePhase === (Number.parseFloat(cyclePhaseInput.value) || 0)
-    && lastFrame.algo === readAlgo()
     && lastFrame.scale === view.scale
     && lastFrame.centerX === view.centerX
     && lastFrame.centerY === view.centerY
@@ -854,7 +635,6 @@ async function processDirtyQueue(generation) {
         centerX: task.frame.centerX,
         centerY: task.frame.centerY,
         scale: task.frame.scale,
-        algo: 'plain',
         region: task.region,
         image: task.frame.imageData,
         progress: showProgress,
@@ -916,7 +696,6 @@ async function render() {
   invalidateScene();
   cancelDirtyQueue();
   const cycle = readCycleSettings();
-  const algo = readAlgo();
   const token = ++pendingRender;
   const { width, height, iterations } = validateDimensions();
   setLoading(true);
@@ -944,7 +723,6 @@ async function render() {
           centerX: view.centerX,
           centerY: view.centerY,
           scale: view.scale,
-          algo: 'plain',
           region,
           image,
           progress: showProgress,
@@ -972,7 +750,6 @@ async function render() {
         palette: paletteInput.value,
         cycleMode: cycle.rawValue,
         cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
-        algo,
         centerX: view.centerX,
         centerY: view.centerY,
         scale: view.scale,
@@ -989,47 +766,26 @@ async function render() {
       if (showProgress) {
         ctx.putImageData(image, 0, 0);
       }
-      if (algo === 'ssg') {
-        const result = await renderFullImageSsg(
-          width,
-          height,
-          iterations,
-          view.centerX,
-          view.centerY,
-          view.scale,
-          image,
-          showProgress,
-          () => token !== pendingRender,
-        );
-        if (result.aborted) {
-          return;
-        }
-        if (!showProgress) {
-          ctx.putImageData(image, 0, 0);
-        }
+      const result = await renderRegionIntoImage({
+        width,
+        height,
+        iterations,
+        centerX: view.centerX,
+        centerY: view.centerY,
+        scale: view.scale,
+        region: { x: 0, y: 0, width, height },
+        image,
+        progress: showProgress,
+        shouldAbort: () => token !== pendingRender,
+      });
+      if (result.aborted) {
+        return;
+      }
+      if (showProgress) {
+        ctx.putImageData(image, 0, 0);
+        setStatus(`Rendering ${width}×${height} at ${iterations} iterations | 100%`);
       } else {
-        const result = await renderRegionIntoImage({
-          width,
-          height,
-          iterations,
-          centerX: view.centerX,
-          centerY: view.centerY,
-          scale: view.scale,
-          algo: 'plain',
-          region: { x: 0, y: 0, width, height },
-          image,
-          progress: showProgress,
-          shouldAbort: () => token !== pendingRender,
-        });
-        if (result.aborted) {
-          return;
-        }
-        if (showProgress) {
-          ctx.putImageData(image, 0, 0);
-          setStatus(`Rendering ${width}×${height} at ${iterations} iterations | 100%`);
-        } else {
-          ctx.putImageData(image, 0, 0);
-        }
+        ctx.putImageData(image, 0, 0);
       }
 
       lastFrame = {
@@ -1039,7 +795,6 @@ async function render() {
         palette: paletteInput.value,
         cycleMode: cycle.rawValue,
         cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
-        algo,
         centerX: view.centerX,
         centerY: view.centerY,
         scale: view.scale,
@@ -1140,7 +895,6 @@ canvas.addEventListener('pointermove', (event) => {
     palette: frame.palette,
     cycleMode: cycle.rawValue,
     cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
-    algo: readAlgo(),
     centerX: view.centerX,
     centerY: view.centerY,
     scale: frame.scale,
@@ -1237,7 +991,7 @@ resetViewButton.addEventListener('click', () => {
   });
 });
 
-for (const input of [sizeInput, iterationsInput, paletteInput, algoInput]) {
+for (const input of [sizeInput, iterationsInput, paletteInput]) {
   input.addEventListener('change', () => {
     if (input === sizeInput) {
       const previousSize = Number.parseInt(sizeInput.dataset.previousValue || sizeInput.value, 10);
