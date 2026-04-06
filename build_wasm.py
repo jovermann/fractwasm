@@ -96,6 +96,70 @@ def export_entry(text: str, kind: int, index: int) -> bytes:
     return name(text) + bytes([kind]) + u32(index)
 
 
+def if_block() -> bytes:
+    return b"\x04\x40"
+
+
+def else_block() -> bytes:
+    return b"\x05"
+
+
+def call(index: int) -> bytes:
+    return b"\x10" + u32(index)
+
+
+def build_calc_point_body() -> bytes:
+    # Params:
+    # 0 width, 1 height, 2 max_iter, 3 center_x, 4 center_y, 5 scale, 6 x, 7 y
+    # Locals:
+    # 8 iter, 9 half_w, 10 half_h, 11 cx, 12 cy, 13 zr, 14 zi, 15 zr2, 16 zi2, 17 tmp, 18 out_idx
+    code = bytearray()
+    code += vec([u32(1) + bytes([I32]), u32(9) + bytes([F64]), u32(1) + bytes([I32])])
+
+    code += local_get(0) + b"\xB7" + f64_const(0.5) + b"\xA2" + local_set(9)
+    code += local_get(1) + b"\xB7" + f64_const(0.5) + b"\xA2" + local_set(10)
+
+    code += local_get(3)
+    code += local_get(6) + b"\xB7"
+    code += local_get(9) + b"\xA1"
+    code += local_get(5) + b"\xA2"
+    code += b"\xA0"
+    code += local_set(11)
+
+    code += local_get(4)
+    code += local_get(7) + b"\xB7"
+    code += local_get(10) + b"\xA1"
+    code += local_get(5) + b"\xA2"
+    code += b"\xA0"
+    code += local_set(12)
+
+    code += f64_const(0.0) + local_set(13)
+    code += f64_const(0.0) + local_set(14)
+    code += i32_const(0) + local_set(8)
+
+    code += block()
+    code += loop()
+    code += local_get(8) + local_get(2) + b"\x4E" + br_if(1)
+
+    code += local_get(13) + local_get(13) + b"\xA2" + local_set(15)
+    code += local_get(14) + local_get(14) + b"\xA2" + local_set(16)
+    code += local_get(15) + local_get(16) + b"\xA0" + f64_const(4.0) + b"\x64" + br_if(1)
+
+    code += local_get(15) + local_get(16) + b"\xA1" + local_get(11) + b"\xA0" + local_set(17)
+    code += f64_const(2.0) + local_get(13) + b"\xA2" + local_get(14) + b"\xA2" + local_get(12) + b"\xA0" + local_set(14)
+    code += local_get(17) + local_set(13)
+    code += local_get(8) + i32_const(1) + b"\x6A" + local_set(8)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += local_get(7) + local_get(0) + b"\x6C" + local_get(6) + b"\x6A"
+    code += i32_const(2) + b"\x74" + local_set(18)
+    code += local_get(18) + local_get(8) + b"\x36\x02\x00"
+    code += end()
+    return u32(len(code)) + bytes(code)
+
+
 def build_render_body() -> bytes:
     # Params:
     # 0 width, 1 height, 2 max_iter, 3 center_x, 4 center_y, 5 scale,
@@ -246,6 +310,155 @@ def build_render_julia_body() -> bytes:
     return u32(len(code)) + bytes(code)
 
 
+def build_render_ssg_grid_body() -> bytes:
+    # Params: 0 width, 1 height, 2 max_iter, 3 center_x, 4 center_y, 5 scale, 6 step
+    # Locals: 7 y, 8 x
+    code = bytearray()
+    code += vec([u32(2) + bytes([I32])])
+
+    code += i32_const(0) + local_set(7)
+    code += block()
+    code += loop()
+    code += local_get(7) + local_get(1) + b"\x4E" + br_if(1)
+
+    code += i32_const(0) + local_set(8)
+    code += block()
+    code += loop()
+    code += local_get(8) + local_get(0) + b"\x4E" + br_if(1)
+
+    code += local_get(0) + local_get(1) + local_get(2) + local_get(3) + local_get(4) + local_get(5)
+    code += local_get(8) + local_get(7) + call(0)
+
+    code += local_get(8) + local_get(6) + b"\x6A" + local_set(8)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += local_get(7) + local_get(6) + b"\x6A" + local_set(7)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += end()
+    return u32(len(code)) + bytes(code)
+
+
+def _refine_target(target_x_local: int, target_y_local: int) -> bytes:
+    code = bytearray()
+    code += block()
+    code += local_get(target_x_local) + local_get(0) + b"\x4F"
+    code += local_get(target_y_local) + local_get(1) + b"\x4F"
+    code += b"\x71" + br_if(0)
+
+    code += local_get(11)
+    code += if_block()
+    code += local_get(target_y_local) + local_get(0) + b"\x6C" + local_get(target_x_local) + b"\x6A"
+    code += i32_const(2) + b"\x74" + local_set(16)
+    code += local_get(16) + local_get(10) + b"\x36\x02\x00"
+    code += else_block()
+    code += local_get(0) + local_get(1) + local_get(2) + local_get(3) + local_get(4) + local_get(5)
+    code += local_get(target_x_local) + local_get(target_y_local) + call(0)
+    code += end()
+
+    code += end()
+    return bytes(code)
+
+
+def build_refine_ssg_body() -> bytes:
+    # Params: 0 width, 1 height, 2 max_iter, 3 center_x, 4 center_y, 5 scale, 6 half_step
+    # Locals:
+    # 7 full_step, 8 y, 9 x, 10 base_val, 11 ok, 12 gy, 13 gx, 14 px, 15 py,
+    # 16 idx, 17 sample_val, 18 target_x, 19 target_y
+    code = bytearray()
+    code += vec([u32(13) + bytes([I32])])
+
+    code += local_get(6) + i32_const(1) + b"\x74" + local_set(7)
+    code += i32_const(0) + local_set(8)
+
+    code += block()
+    code += loop()
+    code += local_get(8) + local_get(1) + b"\x4E" + br_if(1)
+
+    code += i32_const(0) + local_set(9)
+    code += block()
+    code += loop()
+    code += local_get(9) + local_get(0) + b"\x4E" + br_if(1)
+
+    code += i32_const(-2) + local_set(10)
+    code += i32_const(1) + local_set(11)
+    code += i32_const(0) + local_set(12)
+
+    code += block()
+    code += loop()
+    code += local_get(12) + i32_const(4) + b"\x4E" + br_if(1)
+
+    code += i32_const(0) + local_set(13)
+    code += block()
+    code += loop()
+    code += local_get(13) + i32_const(4) + b"\x4E" + br_if(1)
+
+    code += local_get(9) + local_get(13) + i32_const(1) + b"\x6B" + local_get(7) + b"\x6C" + b"\x6A" + local_set(14)
+    code += local_get(8) + local_get(12) + i32_const(1) + b"\x6B" + local_get(7) + b"\x6C" + b"\x6A" + local_set(15)
+
+    code += local_get(14) + i32_const(0) + b"\x48"
+    code += local_get(14) + local_get(0) + b"\x4E" + b"\x72"
+    code += local_get(15) + i32_const(0) + b"\x48" + b"\x72"
+    code += local_get(15) + local_get(1) + b"\x4E" + b"\x72"
+    code += b"\x45"
+    code += if_block()
+    code += local_get(15) + local_get(0) + b"\x6C" + local_get(14) + b"\x6A"
+    code += i32_const(2) + b"\x74" + local_set(16)
+    code += local_get(16) + b"\x28\x02\x00" + local_set(17)
+
+    code += local_get(10) + i32_const(-2) + b"\x46"
+    code += if_block()
+    code += local_get(17) + local_set(10)
+    code += else_block()
+    code += local_get(17) + local_get(10) + b"\x47"
+    code += if_block()
+    code += i32_const(0) + local_set(11)
+    code += end()
+    code += end()
+    code += else_block()
+    code += i32_const(0) + local_set(11)
+    code += end()
+
+    code += local_get(13) + i32_const(1) + b"\x6A" + local_set(13)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += local_get(12) + i32_const(1) + b"\x6A" + local_set(12)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += local_get(9) + local_get(6) + b"\x6A" + local_set(18)
+    code += local_get(8) + local_set(19)
+    code += _refine_target(18, 19)
+
+    code += local_get(9) + local_set(18)
+    code += local_get(8) + local_get(6) + b"\x6A" + local_set(19)
+    code += _refine_target(18, 19)
+
+    code += local_get(9) + local_get(6) + b"\x6A" + local_set(18)
+    code += local_get(8) + local_get(6) + b"\x6A" + local_set(19)
+    code += _refine_target(18, 19)
+
+    code += local_get(9) + local_get(7) + b"\x6A" + local_set(9)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += local_get(8) + local_get(7) + b"\x6A" + local_set(8)
+    code += br(0)
+    code += end()
+    code += end()
+
+    code += end()
+    return u32(len(code)) + bytes(code)
+
+
 def build_module() -> bytes:
     magic = b"\x00asm"
     version = b"\x01\x00\x00\x00"
@@ -253,19 +466,29 @@ def build_module() -> bytes:
     type_section = section(
         1,
         vec([
+            bytes([FUNC_TYPE]) + vec([bytes([I32]), bytes([I32]), bytes([I32]), bytes([F64]), bytes([F64]), bytes([F64]), bytes([I32]), bytes([I32])]) + vec([]),
             bytes([FUNC_TYPE]) + vec([bytes([I32]), bytes([I32]), bytes([I32]), bytes([F64]), bytes([F64]), bytes([F64]), bytes([I32]), bytes([I32]), bytes([I32]), bytes([I32])]) + vec([bytes([I32])]),
             bytes([FUNC_TYPE]) + vec([bytes([I32]), bytes([I32]), bytes([I32]), bytes([F64]), bytes([F64]), bytes([F64]), bytes([F64]), bytes([F64]), bytes([I32]), bytes([I32]), bytes([I32]), bytes([I32])]) + vec([bytes([I32])]),
+            bytes([FUNC_TYPE]) + vec([bytes([I32]), bytes([I32]), bytes([I32]), bytes([F64]), bytes([F64]), bytes([F64]), bytes([I32])]) + vec([]),
         ]),
     )
 
-    function_section = section(3, vec([u32(0), u32(1)]))
+    function_section = section(3, vec([u32(0), u32(1), u32(2), u32(3), u32(3)]))
     memory_section = section(5, vec([b"\x00" + u32(256)]))
     export_section = section(7, vec([
         export_entry("memory", 0x02, 0),
-        export_entry("render", 0x00, 0),
-        export_entry("render_julia", 0x00, 1),
+        export_entry("render", 0x00, 1),
+        export_entry("render_julia", 0x00, 2),
+        export_entry("render_ssg_grid", 0x00, 3),
+        export_entry("refine_ssg", 0x00, 4),
     ]))
-    code_section = section(10, vec([build_render_body(), build_render_julia_body()]))
+    code_section = section(10, vec([
+        build_calc_point_body(),
+        build_render_body(),
+        build_render_julia_body(),
+        build_render_ssg_grid_body(),
+        build_refine_ssg_body(),
+    ]))
     return magic + version + type_section + function_section + memory_section + export_section + code_section
 
 

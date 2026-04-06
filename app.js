@@ -19,6 +19,7 @@ const iterationsInput = document.getElementById('iterationsInput');
 const paletteInput = document.getElementById('paletteInput');
 const cycleLengthInput = document.getElementById('cycleLengthInput');
 const cyclePhaseInput = document.getElementById('cyclePhaseInput');
+const algoInput = document.getElementById('algoInput');
 const modeInput = document.getElementById('modeInput');
 const progressInput = document.getElementById('progressInput');
 const renderButton = document.getElementById('renderButton');
@@ -77,6 +78,10 @@ function readCycleSettings() {
 
 function readMode() {
   return String(modeInput.value || 'mandelbrot');
+}
+
+function readAlgo() {
+  return String(algoInput.value || 'plain');
 }
 
 async function withWasmLock(work) {
@@ -344,6 +349,19 @@ function getFullImageBuffer(width, height) {
   return new Uint32Array(wasmMemory.buffer, 0, width * height);
 }
 
+function makeSsgDisplayBuffer(width, height, cellSize) {
+  const source = getFullImageBuffer(width, height);
+  const display = new Uint32Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    const sampleY = Math.min(height - 1, Math.floor(y / cellSize) * cellSize);
+    for (let x = 0; x < width; x += 1) {
+      const sampleX = Math.min(width - 1, Math.floor(x / cellSize) * cellSize);
+      display[(y * width) + x] = source[(sampleY * width) + sampleX];
+    }
+  }
+  return display;
+}
+
 function updateModeLayout() {
   const dual = readMode() !== 'mandelbrot';
   juliaPane.hidden = !dual;
@@ -472,6 +490,35 @@ async function renderRegionIntoImage(task) {
   return renderRegionPlainIntoImage(task);
 }
 
+async function renderFullImageSsg(width, height, iterations, centerX, centerY, scale, image, progress, shouldAbort) {
+  wasmInstance.exports.render_ssg_grid(width, height, iterations, centerX, centerY, scale, 16);
+  if (shouldAbort()) {
+    return { aborted: true };
+  }
+  if (progress) {
+    paintRegionIntoImage(image, makeSsgDisplayBuffer(width, height, 16), 0, 0, width, height, iterations);
+    ctx.putImageData(image, 0, 0);
+    setStatus('SSG grid 16');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  for (const halfStep of [8, 4, 2, 1]) {
+    if (shouldAbort()) {
+      return { aborted: true };
+    }
+    wasmInstance.exports.refine_ssg(width, height, iterations, centerX, centerY, scale, halfStep);
+    if (progress) {
+      paintRegionIntoImage(image, makeSsgDisplayBuffer(width, height, halfStep), 0, 0, width, height, iterations);
+      ctx.putImageData(image, 0, 0);
+      setStatus(`SSG refine ${halfStep}`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+  return { aborted: false };
+}
+
 function shiftImageData(source, shiftX, shiftY) {
   const shifted = ctx.createImageData(source.width, source.height);
   const src = source.data;
@@ -562,6 +609,7 @@ function canRenderDirtyRegions(width, height, iterations) {
     && lastFrame.palette === paletteInput.value
     && lastFrame.cycleMode === readCycleSettings().rawValue
     && lastFrame.cyclePhase === (Number.parseFloat(cyclePhaseInput.value) || 0)
+    && lastFrame.algo === readAlgo()
     && lastFrame.scale === view.scale
     && lastFrame.centerX === view.centerX
     && lastFrame.centerY === view.centerY
@@ -696,6 +744,7 @@ async function render() {
   invalidateScene();
   cancelDirtyQueue();
   const cycle = readCycleSettings();
+  const algo = readAlgo();
   const token = ++pendingRender;
   const { width, height, iterations } = validateDimensions();
   setLoading(true);
@@ -750,6 +799,7 @@ async function render() {
         palette: paletteInput.value,
         cycleMode: cycle.rawValue,
         cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
+        algo,
         centerX: view.centerX,
         centerY: view.centerY,
         scale: view.scale,
@@ -766,18 +816,30 @@ async function render() {
       if (showProgress) {
         ctx.putImageData(image, 0, 0);
       }
-      const result = await renderRegionIntoImage({
-        width,
-        height,
-        iterations,
-        centerX: view.centerX,
-        centerY: view.centerY,
-        scale: view.scale,
-        region: { x: 0, y: 0, width, height },
-        image,
-        progress: showProgress,
-        shouldAbort: () => token !== pendingRender,
-      });
+      const result = algo === 'ssg'
+        ? await renderFullImageSsg(
+          width,
+          height,
+          iterations,
+          view.centerX,
+          view.centerY,
+          view.scale,
+          image,
+          showProgress,
+          () => token !== pendingRender,
+        )
+        : await renderRegionIntoImage({
+          width,
+          height,
+          iterations,
+          centerX: view.centerX,
+          centerY: view.centerY,
+          scale: view.scale,
+          region: { x: 0, y: 0, width, height },
+          image,
+          progress: showProgress,
+          shouldAbort: () => token !== pendingRender,
+        });
       if (result.aborted) {
         return;
       }
@@ -795,6 +857,7 @@ async function render() {
         palette: paletteInput.value,
         cycleMode: cycle.rawValue,
         cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
+        algo,
         centerX: view.centerX,
         centerY: view.centerY,
         scale: view.scale,
@@ -895,6 +958,7 @@ canvas.addEventListener('pointermove', (event) => {
     palette: frame.palette,
     cycleMode: cycle.rawValue,
     cyclePhase: Number.parseFloat(cyclePhaseInput.value) || 0,
+    algo: readAlgo(),
     centerX: view.centerX,
     centerY: view.centerY,
     scale: frame.scale,
@@ -991,7 +1055,7 @@ resetViewButton.addEventListener('click', () => {
   });
 });
 
-for (const input of [sizeInput, iterationsInput, paletteInput]) {
+for (const input of [sizeInput, iterationsInput, paletteInput, algoInput]) {
   input.addEventListener('change', () => {
     if (input === sizeInput) {
       const previousSize = Number.parseInt(sizeInput.dataset.previousValue || sizeInput.value, 10);
