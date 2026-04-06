@@ -346,6 +346,46 @@ function clearFullImageBuffer(width, height) {
   getFullImageBuffer(width, height).fill(UNKNOWN_ITER);
 }
 
+function makeDisplayBufferFromStride(width, height, stride) {
+  const source = getFullImageBuffer(width, height);
+  const display = new Uint32Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    const sampleY = Math.min(height - 1, Math.floor(y / stride) * stride);
+    for (let x = 0; x < width; x += 1) {
+      const sampleX = Math.min(width - 1, Math.floor(x / stride) * stride);
+      let value = source[(sampleY * width) + sampleX];
+      if (value === UNKNOWN_ITER) {
+        const gridX = Math.floor(x / stride);
+        const gridY = Math.floor(y / stride);
+        for (let radius = 1; radius <= 3 && value === UNKNOWN_ITER; radius += 1) {
+          for (let gy = gridY - radius; gy <= gridY + radius && value === UNKNOWN_ITER; gy += 1) {
+            if (gy < 0 || (gy * stride) >= height) {
+              continue;
+            }
+            for (let gx = gridX - radius; gx <= gridX + radius; gx += 1) {
+              if (gx < 0 || (gx * stride) >= width) {
+                continue;
+              }
+              const probeX = Math.min(width - 1, gx * stride);
+              const probeY = Math.min(height - 1, gy * stride);
+              const probe = source[(probeY * width) + probeX];
+              if (probe !== UNKNOWN_ITER) {
+                value = probe;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (value === UNKNOWN_ITER) {
+        value = 0;
+      }
+      display[(y * width) + x] = value;
+    }
+  }
+  return display;
+}
+
 function updateModeLayout() {
   const dual = readMode() !== 'mandelbrot';
   juliaPane.hidden = !dual;
@@ -420,7 +460,7 @@ async function renderJuliaSsg(width, height, iterations, cReal, cImag) {
       stride,
       1,
     );
-    paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+    paintRegionIntoImage(image, makeDisplayBufferFromStride(width, height, stride), 0, 0, width, height, iterations);
     step += 1;
     if (progressInput.checked) {
       juliaCtx.putImageData(image, 0, 0);
@@ -431,7 +471,7 @@ async function renderJuliaSsg(width, height, iterations, cReal, cImag) {
         return;
       }
       guessFromBuffer(width, height, stride);
-      paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+      paintRegionIntoImage(image, makeDisplayBufferFromStride(width, height, Math.max(1, stride >> 1)), 0, 0, width, height, iterations);
       step += 1;
       if (progressInput.checked) {
         juliaCtx.putImageData(image, 0, 0);
@@ -606,7 +646,7 @@ async function renderFullImageSsg(width, height, iterations, centerX, centerY, s
       stride,
       1,
     );
-    paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+    paintRegionIntoImage(image, makeDisplayBufferFromStride(width, height, stride), 0, 0, width, height, iterations);
     step += 1;
     if (progress) {
       ctx.putImageData(image, 0, 0);
@@ -618,7 +658,7 @@ async function renderFullImageSsg(width, height, iterations, centerX, centerY, s
         return { aborted: true };
       }
       guessFromBuffer(width, height, stride);
-      paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+      paintRegionIntoImage(image, makeDisplayBufferFromStride(width, height, Math.max(1, stride >> 1)), 0, 0, width, height, iterations);
       step += 1;
       if (progress) {
         ctx.putImageData(image, 0, 0);
