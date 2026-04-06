@@ -22,6 +22,7 @@ const cyclePhaseInput = document.getElementById('cyclePhaseInput');
 const algoInput = document.getElementById('algoInput');
 const modeInput = document.getElementById('modeInput');
 const progressInput = document.getElementById('progressInput');
+const debugInput = document.getElementById('debugInput');
 const renderButton = document.getElementById('renderButton');
 const resetViewButton = document.getElementById('resetViewButton');
 const statusText = document.getElementById('statusText');
@@ -362,6 +363,32 @@ function makeSsgDisplayBuffer(width, height, cellSize) {
   return display;
 }
 
+function getSsgMaskOffset(width, height) {
+  return width * height * 4;
+}
+
+function getSsgMaskBuffer(width, height) {
+  return new Uint8Array(wasmMemory.buffer, getSsgMaskOffset(width, height), width * height);
+}
+
+function paintSsgDebugMask(image) {
+  if (!debugInput.checked || readAlgo() !== 'ssg') {
+    return;
+  }
+  const mask = getSsgMaskBuffer(image.width, image.height);
+  const pixels = image.data;
+  for (let i = 0; i < mask.length; i += 1) {
+    if (mask[i] === 0) {
+      continue;
+    }
+    const pixelIndex = i * 4;
+    pixels[pixelIndex] = 255;
+    pixels[pixelIndex + 1] = 255;
+    pixels[pixelIndex + 2] = 255;
+    pixels[pixelIndex + 3] = 255;
+  }
+}
+
 function updateModeLayout() {
   const dual = readMode() !== 'mandelbrot';
   juliaPane.hidden = !dual;
@@ -491,12 +518,15 @@ async function renderRegionIntoImage(task) {
 }
 
 async function renderFullImageSsg(width, height, iterations, centerX, centerY, scale, image, progress, shouldAbort) {
+  getSsgMaskBuffer(width, height).fill(0);
+  const maskOffset = getSsgMaskOffset(width, height);
   wasmInstance.exports.render_ssg_grid(width, height, iterations, centerX, centerY, scale, 16);
   if (shouldAbort()) {
     return { aborted: true };
   }
   if (progress) {
     paintRegionIntoImage(image, makeSsgDisplayBuffer(width, height, 16), 0, 0, width, height, iterations);
+    paintSsgDebugMask(image);
     ctx.putImageData(image, 0, 0);
     setStatus('SSG grid 16');
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -506,9 +536,10 @@ async function renderFullImageSsg(width, height, iterations, centerX, centerY, s
     if (shouldAbort()) {
       return { aborted: true };
     }
-    wasmInstance.exports.refine_ssg(width, height, iterations, centerX, centerY, scale, halfStep);
+    wasmInstance.exports.refine_ssg(width, height, iterations, centerX, centerY, scale, halfStep, maskOffset);
     if (progress) {
       paintRegionIntoImage(image, makeSsgDisplayBuffer(width, height, halfStep), 0, 0, width, height, iterations);
+      paintSsgDebugMask(image);
       ctx.putImageData(image, 0, 0);
       setStatus(`SSG refine ${halfStep}`);
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -516,6 +547,7 @@ async function renderFullImageSsg(width, height, iterations, centerX, centerY, s
   }
 
   paintRegionIntoImage(image, getFullImageBuffer(width, height), 0, 0, width, height, iterations);
+  paintSsgDebugMask(image);
   return { aborted: false };
 }
 
@@ -1089,6 +1121,10 @@ modeInput.addEventListener('change', () => {
 });
 
 progressInput.addEventListener('change', () => {
+  scheduleRender();
+});
+
+debugInput.addEventListener('change', () => {
   scheduleRender();
 });
 
