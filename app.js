@@ -1,4 +1,5 @@
 const MEMORY_LIMIT_BYTES = 16 * 1024 * 1024;
+const PLAIN_PROGRESS_PIXELS = 32768;
 const DEFAULT_VIEW = {
   centerX: -0.5,
   centerY: 0,
@@ -482,15 +483,14 @@ async function renderRegionPlainIntoImage(task) {
     image,
     progress,
     shouldAbort,
+    onProgress,
   } = task;
-  const batchRows = progress ? Math.max(1, Math.ceil(region.height / 16)) : region.height;
-  let localRowsDone = 0;
   let paintedPixels = 0;
-  while (localRowsDone < region.height) {
+
+  if (!progress) {
     if (shouldAbort()) {
       return { aborted: true, paintedPixels };
     }
-    const rowCount = Math.min(batchRows, region.height - localRowsDone);
     const regionBuffer = renderRegion(
       width,
       height,
@@ -499,17 +499,76 @@ async function renderRegionPlainIntoImage(task) {
       centerY,
       scale,
       region.x,
-      region.y + localRowsDone,
+      region.y,
       region.width,
-      rowCount,
+      region.height,
     );
-    paintRegionIntoImage(image, regionBuffer, region.x, region.y + localRowsDone, region.width, rowCount, iterations);
-    localRowsDone += rowCount;
-    paintedPixels += region.width * rowCount;
-    if (progress) {
+    paintRegionIntoImage(image, regionBuffer, region.x, region.y, region.width, region.height, iterations);
+    return { aborted: false, paintedPixels: region.width * region.height };
+  }
+
+  let localY = 0;
+  while (localY < region.height) {
+    if (shouldAbort()) {
+      return { aborted: true, paintedPixels };
+    }
+
+    if (region.width <= PLAIN_PROGRESS_PIXELS) {
+      const rowCount = Math.min(
+        Math.max(1, Math.floor(PLAIN_PROGRESS_PIXELS / region.width)),
+        region.height - localY,
+      );
+      const regionBuffer = renderRegion(
+        width,
+        height,
+        iterations,
+        centerX,
+        centerY,
+        scale,
+        region.x,
+        region.y + localY,
+        region.width,
+        rowCount,
+      );
+      paintRegionIntoImage(image, regionBuffer, region.x, region.y + localY, region.width, rowCount, iterations);
+      paintedPixels += region.width * rowCount;
+      localY += rowCount;
+      if (onProgress) {
+        onProgress({ paintedPixels });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      continue;
+    }
+
+    let localX = 0;
+    while (localX < region.width) {
+      if (shouldAbort()) {
+        return { aborted: true, paintedPixels };
+      }
+      const chunkWidth = Math.min(PLAIN_PROGRESS_PIXELS, region.width - localX);
+      const regionBuffer = renderRegion(
+        width,
+        height,
+        iterations,
+        centerX,
+        centerY,
+        scale,
+        region.x + localX,
+        region.y + localY,
+        chunkWidth,
+        1,
+      );
+      paintRegionIntoImage(image, regionBuffer, region.x + localX, region.y + localY, chunkWidth, 1, iterations);
+      paintedPixels += chunkWidth;
+      localX += chunkWidth;
+      if (onProgress) {
+        onProgress({ paintedPixels });
+      }
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+    localY += 1;
   }
+
   return { aborted: false, paintedPixels };
 }
 
@@ -871,6 +930,11 @@ async function render() {
           image,
           progress: showProgress,
           shouldAbort: () => token !== pendingRender,
+          onProgress: ({ paintedPixels }) => {
+            ctx.putImageData(image, 0, 0);
+            const percent = Math.round((paintedPixels / (width * height)) * 100);
+            setStatus(`Rendering ${width}×${height} at ${iterations} iterations | ${percent}%`);
+          },
         });
       if (result.aborted) {
         return;
